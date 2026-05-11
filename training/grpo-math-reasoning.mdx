@@ -1,0 +1,144 @@
+---
+title: "GRPO for Math Reasoning on GSM8K"
+description: "Fine-tune language models on GSM8K math word problems using Group Relative Policy Optimization with five composable reward functions for correctness and format."
+---
+
+Group Relative Policy Optimization (GRPO) trains models to generate step-by-step mathematical reasoning by scoring groups of completions relative to each other — no explicit value network needed. This pipeline fine-tunes models on [GSM8K](https://huggingface.co/datasets/openai/gsm8k), a dataset of 7,473 grade-school math word problems, using one correctness reward and four format rewards that together enforce structured, verifiable solutions. A two-stage variant is also available: first priming a Qwen3-4B-Base model on OpenR1-Math-220k to teach the output format, then applying GRPO on GSM8K.
+
+## Supported models
+
+Five model configurations are provided out of the box. Switch between them by updating `model_id` in `config.yaml`.
+
+| Model | HuggingFace ID |
+|-------|---------------|
+| Llama-3.2-3B (default) | `unsloth/Llama-3.2-3B-Instruct` |
+| Phi-4 | `unsloth/phi-4` |
+| Mistral-7B | `unsloth/mistral-7b-instruct-v0.3-bnb-4bit` |
+| Llama-3.1-8B | `unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit` |
+| Gemma3-1B | `unsloth/gemma-3-1b-it` |
+
+## Reward functions
+
+The five reward functions are passed to `GRPOTrainer` as a list. GRPO averages the scores across the group of generated completions to compute a relative advantage signal.
+
+| Category | Reward function | Description | Score range |
+|----------|-----------------|-------------|-------------|
+| Correctness | `AnswerCorrectnessReward` | Extracts the numeric value from `<answer>` tags and compares it to the ground-truth answer | −1.0 to 3.0 |
+| Format | `ReasoningTagsReward` | Validates presence and proper nesting of `<reasoning>` and `<answer>` tags | −2.0 to 2.0 |
+| Format | `StepFormatReward` | Rewards numbered or bulleted step-by-step structure (minimum 3 steps) | 0.0 to 1.0 |
+| Format | `MultilineComplianceReward` | Rewards multi-line responses with sufficient depth (minimum 5 lines) | 0.0 to 1.0 |
+| Format | `ResponseStructureReward` | Validates that both reasoning and answer blocks are non-empty | 0.0 to 1.0 |
+
+## Running the pipeline
+
+### Single-stage: GRPO on GSM8K
+
+This is the default configuration. It runs with `unsloth/Llama-3.2-3B-Instruct` using `config.yaml`.
+
+```bash
+python src/llm_finetuning/math_reasoning/grpo/gsm8k/train.py --config config.yaml
+```
+
+To use a different model, pass the corresponding config file:
+
+```bash
+python src/llm_finetuning/math_reasoning/grpo/gsm8k/train.py --config config_mistral7b.yaml
+```
+
+### Two-stage pipeline: SFT then GRPO
+
+The two-stage variant is designed for `Qwen3-4B-Base`, which lacks an instruction-following format out of the box. Stage 1 teaches the model to produce `<reasoning>/<answer>` output; Stage 2 then reinforces correctness via GRPO.
+
+<Steps>
+  <Step title="Stage 1 — SFT on OpenR1-Math-220k">
+    Fine-tunes Qwen3-4B-Base on `open-r1/OpenR1-Math-220k`, filtering to examples with numeric answers within a 1024-token budget. This primes the model for structured `<reasoning>/<answer>` output format.
+
+    ```bash
+    python src/llm_finetuning/math_reasoning/sft/openr1_math/train.py
+    ```
+
+    The trained checkpoint is saved to `output_dir` defined in the SFT config and used as `model_id` in the GRPO stage.
+  </Step>
+  <Step title="Stage 2 — GRPO on GSM8K">
+    Runs GRPO on GSM8K using the Stage 1 checkpoint as the base model. Pass `config_qwen3.yaml` to point to the Stage 1 output.
+
+    ```bash
+    python src/llm_finetuning/math_reasoning/grpo/gsm8k/train.py --config config_qwen3.yaml
+    ```
+
+    Stage 2 can also be run standalone with the default `config.yaml` using `unsloth/Llama-3.2-3B-Instruct` — Stage 1 is only required for the Qwen3 variant.
+  </Step>
+</Steps>
+
+## Configuration reference
+
+Key parameters from `grpo/gsm8k/config.yaml`:
+
+```yaml
+model_id: "unsloth/Llama-3.2-3B-Instruct"
+max_seq_length: 2048
+output_dir: "./outputs/math_reasoning/grpo/gsm8k"
+dataset_split: "train"
+
+learning_rate: 5.0e-6
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+num_generations: 4
+max_prompt_length: 256
+max_completion_length: 512
+num_train_epochs: 1
+max_grad_norm: 0.1
+
+lora_r: 8
+lora_alpha: 8
+target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `num_generations` | Number of completions generated per prompt for relative advantage estimation |
+| `max_prompt_length` | Maximum token length for the input prompt (truncated if exceeded) |
+| `max_completion_length` | Maximum token length for generated completions |
+| `max_grad_norm` | Gradient clipping threshold; 0.1 is recommended for GRPO stability |
+
+## Training script structure
+
+The `train.py` script loads the model via Unsloth's `FastLanguageModel` (4-bit QLoRA), builds a `GRPOTrainer` with all five reward functions, and runs training:
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+from unsloth import FastLanguageModel
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=config["model_id"],
+    max_seq_length=config["max_seq_length"],
+    load_in_4bit=True,
+)
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=0,
+    use_gradient_checkpointing="unsloth",
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        AnswerCorrectnessReward(),
+        ReasoningTagsReward(),
+        StepFormatReward(),
+        MultilineComplianceReward(),
+        ResponseStructureReward(),
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+
+trainer.train()
+```
+
+## Output
+
+Trained adapter weights and the tokenizer are saved to `./outputs/math_reasoning/grpo/gsm8k/` by default. Change `output_dir` in `config.yaml` to save elsewhere.

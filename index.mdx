@@ -1,133 +1,48 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "LLM Fine-tuning: Pipelines for SFT and RLHF"
+description: "39 training pipelines for fine-tuning large language models with Supervised Fine-Tuning, GRPO, and Preference Alignment across diverse QA domains."
 ---
 
-## Setting up
+LLM Fine-tuning provides ready-to-run training pipelines for adapting large language models to specialized tasks. It covers three paradigms — Supervised Fine-Tuning (SFT) with adapter methods, Reinforcement Learning with Group Relative Policy Optimization (GRPO), and Preference Alignment — across 16 datasets in math reasoning, multi-hop QA, medical QA, and general question answering.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn the project structure, supported techniques, and which pipeline to use for your task.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install dependencies and run your first fine-tuning pipeline in minutes.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Training Paradigms" icon="brain" href="/training/supervised-finetuning">
+    Explore SFT, GRPO, and Preference Alignment pipelines with real command examples.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Config Reference" icon="sliders" href="/reference/config">
+    Full reference for all YAML configuration fields across every pipeline.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What's included
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="Supervised Fine-Tuning" icon="graduation-cap" href="/training/supervised-finetuning">
+    25 pipelines across LoRA, QLoRA, DoRA, P-Tuning, and Prefix-Tuning on 5 QA datasets.
+  </Card>
+  <Card title="GRPO Math Reasoning" icon="calculator" href="/training/grpo-math-reasoning">
+    GRPO on GSM8K with 5 reward functions, plus a two-stage SFT + GRPO pipeline for Qwen3.
+  </Card>
+  <Card title="Multi-Hop QA" icon="link" href="/training/multi-hop-qa">
+    GRPO on HotpotQA, FreshQA, and MuSiQue with 8 reward functions.
+  </Card>
+  <Card title="Medical QA" icon="stethoscope" href="/training/medical-qa">
+    GRPO on MedQA, BioASQ, and PubMedQA with LLM-as-a-Judge evaluation.
+  </Card>
+  <Card title="Preference Alignment" icon="thumbs-up" href="/training/preference-alignment">
+    DPO, ORPO, KTO, and PPO pipelines for aligning models with human preferences.
+  </Card>
+  <Card title="Reward Functions" icon="star" href="/concepts/reward-functions">
+    Composable reward functions for correctness and format, backed by DeepEval and Evidently AI.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Built on industry-standard tooling
 
-## Make your content agent ready
-
-Make your docs work for humans and AI agents alike.
-
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+LLM Fine-tuning is built on [HuggingFace TRL](https://huggingface.co/docs/trl), [PEFT](https://huggingface.co/docs/peft), and [Unsloth](https://github.com/unslothai/unsloth) for training, with reward evaluation powered by [DeepEval](https://deepeval.com/) and [Evidently AI](https://www.evidentlyai.com/). Every pipeline follows the same pattern: a `config.yaml` for hyperparameters, a dataset loader, and a `train.py` script you run directly.

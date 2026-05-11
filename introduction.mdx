@@ -1,0 +1,189 @@
+---
+title: "LLM Fine-tuning: Overview and Architecture"
+description: "LLM Fine-tuning provides 39 training pipelines for SFT, GRPO, and Preference Alignment across math, QA, and medical domains using TRL, PEFT, and Unsloth."
+---
+
+LLM Fine-tuning is a collection of 39 self-contained training pipelines that covers three paradigms — Supervised Fine-Tuning (SFT) with adapter methods, Reinforcement Learning via Group Relative Policy Optimization (GRPO), and Preference Alignment — across 16 datasets spanning math reasoning, multi-hop question answering, medical question answering, and general QA domains. Each pipeline is built on HuggingFace TRL, PEFT, and Unsloth, with reward functions powered by DeepEval and Evidently AI.
+
+<CardGroup cols={3}>
+  <Card title="Supervised fine-tuning" icon="layer-group" href="/training/supervised-finetuning">
+    Five adapter techniques (LoRA, QLoRA, DoRA, P-Tuning, Prefix-Tuning) across five QA datasets.
+  </Card>
+  <Card title="GRPO math reasoning" icon="calculator" href="/training/grpo-math-reasoning">
+    Group Relative Policy Optimization on GSM8K with correctness and format reward functions.
+  </Card>
+  <Card title="Multi-hop QA" icon="arrow-right-arrow-left" href="/training/multi-hop-qa">
+    GRPO fine-tuning on HotpotQA, FreshQA, and MuSiQue with eight reward functions.
+  </Card>
+  <Card title="Medical QA" icon="stethoscope" href="/training/medical-qa">
+    GRPO fine-tuning on MedQA, BioASQ, and PubMedQA with LLM-as-a-Judge evaluation.
+  </Card>
+  <Card title="Preference alignment" icon="thumbs-up" href="/training/preference-alignment">
+    DPO, ORPO, KTO, and PPO alignment algorithms using QLoRA via Unsloth and TRL.
+  </Card>
+</CardGroup>
+
+## Project structure
+
+All training code lives under `src/llm_finetuning/`, organized by paradigm and then by technique and dataset.
+
+```text
+src/llm_finetuning/
+├── core/                                    # Shared abstractions
+│   ├── dataset_loader.py                    # BaseDatasetLoader, DatasetConfig
+│   ├── prompt_template.py                   # PromptTemplate
+│   ├── reward.py                            # BaseReward abstract class
+│   └── llm_judges/                          # LLM-as-a-Judge reward implementations
+│       ├── deepeval.py                      # DeepEval-backed rewards
+│       └── evidently.py                     # Evidently-backed rewards
+│
+├── supervised_finetuning/                   # 25 SFT pipelines (5 techniques × 5 datasets)
+│   ├── loaders.py                           # Dataset loaders for all 5 SFT datasets
+│   ├── data_preparation/                    # Prompt templates per dataset
+│   ├── lora/{arc,triviaqa,factscore,popqa,earnings_call}/
+│   ├── qlora/{arc,triviaqa,factscore,popqa,earnings_call}/
+│   ├── dora/{arc,triviaqa,factscore,popqa,earnings_call}/
+│   ├── p_tuning/{arc,triviaqa,factscore,popqa,earnings_call}/
+│   └── prefix_tuning/{arc,triviaqa,factscore,popqa,earnings_call}/
+│
+├── math_reasoning/                          # 2 pipelines
+│   ├── sft/openr1_math/                     # Stage 1: Format-priming SFT
+│   ├── grpo/gsm8k/                          # Stage 2: GRPO with reward functions
+│   └── reward_functions/
+│       ├── correctness/answer_correctness.py
+│       └── format/{reasoning_tags,step_format,multiline_compliance,response_structure}.py
+│
+├── multi_hop_question_answering/            # 3 GRPO pipelines
+│   ├── grpo/{hotpotqa,freshqa,musique}/
+│   └── reward_functions/
+│       ├── correctness/{deepeval_gevalrag,deepeval_summarization,deepeval_answer_relevancy,evidently_correctness_llm}.py
+│       └── format/{reasoning_tags,multiline_compliance,structure_validation,response_format}.py
+│
+├── medical_question_answering/              # 3 GRPO pipelines
+│   ├── {medqa,bioasq,pubmedqa}/
+│   └── reward_functions/
+│       ├── correctness/
+│       └── format/
+│
+└── preference_alignment/                    # 6 pipelines
+    ├── base_loader.py
+    ├── reward_models/pointwise_reward_model.py
+    ├── dpo/{ultrafeedback,webgpt}/
+    ├── orpo/ultrafeedback/
+    ├── kto/kto_mix/
+    └── ppo/{ultrafeedback,webgpt}/
+```
+
+### Pipeline anatomy
+
+Every pipeline directory shares the same three-file layout:
+
+```text
+<technique>/<dataset>/
+├── train.py           # Training script
+├── config.yaml        # Hyperparameters (model_id, learning_rate, LoRA rank, etc.)
+└── data_processing.py # Dataset-specific loader and formatter
+```
+
+`train.py` reads all hyperparameters from the co-located `config.yaml`, so you can swap models, datasets, or training settings without touching source code.
+
+---
+
+## Training paradigms
+
+### Supervised fine-tuning
+
+Supervised Fine-Tuning trains Llama-3.2-3B on five QA datasets using adapter-based methods. The base model weights remain frozen; only the adapter parameters are updated. All pipelines use `SFTTrainer` from TRL.
+
+| Technique | Description | Key parameter |
+|-----------|-------------|---------------|
+| **LoRA** | Low-rank weight updates applied to attention and feed-forward projection matrices | Rank 8, alpha 32 |
+| **QLoRA** | LoRA with 4-bit NF4 quantization of the base model via BitsAndBytes | Rank 8, alpha 32 |
+| **DoRA** | Weight-Decomposed LoRA — decomposes weights into magnitude and direction, applies LoRA to the directional component | `use_dora=True` |
+| **P-Tuning** | Trains a small encoder network to produce continuous prompt embeddings prepended to the input | Virtual tokens configurable |
+| **Prefix-Tuning** | Prepends trainable prefix vectors to the key and value tensors of every attention layer | Virtual tokens configurable |
+
+**Datasets:**
+
+| Dataset | Domain | Description |
+|---------|--------|-------------|
+| [ARC](https://huggingface.co/datasets/allenai/ai2_arc) | Science QA | AI2 Reasoning Challenge — grade-school multiple-choice science questions |
+| [TriviaQA](https://huggingface.co/datasets/mandarjoshi/trivia_qa) | Open-domain QA | Trivia questions with evidence documents from Wikipedia and the web |
+| [FactScore](https://huggingface.co/datasets/awinml/factscore_unlabelled_alpaca_13b_retrieval) | Factual QA | Atomic fact verification dataset for hallucination detection |
+| [PopQA](https://huggingface.co/datasets/akariasai/PopQA) | Entity QA | Factoid questions about popular entities from Wikipedia |
+| [Earnings Calls](https://huggingface.co/datasets/lamini/earnings-calls-qa) | Financial QA | Question answering over earnings call transcripts from 2,800+ companies |
+
+### GRPO math reasoning
+
+GRPO trains language models to generate step-by-step reasoning for grade-school math word problems. Five models are trained on [GSM8K](https://huggingface.co/datasets/openai/gsm8k) (7,473 problems) using one correctness reward and four format rewards. An optional two-stage pipeline primes Qwen3-4B-Base on OpenR1-Math-220k before applying GRPO.
+
+**Models:** Phi-4, Mistral-7B, Llama-3.2-3B, Llama-3.1-8B, Gemma3-1B
+
+| Category | Reward function | Description |
+|----------|-----------------|-------------|
+| Correctness | `AnswerCorrectnessReward` | Extracts numeric value from `<answer>` tags and compares to ground truth |
+| Format | `ReasoningTagsReward` | Validates presence and proper nesting of `<reasoning>` and `<answer>` tags |
+| Format | `StepFormatReward` | Rewards numbered or bulleted step-by-step structure (minimum 3 steps) |
+| Format | `MultilineComplianceReward` | Rewards multi-line responses with sufficient depth (minimum 5 lines) |
+| Format | `ResponseStructureReward` | Validates that both reasoning and answer blocks are present |
+
+### Multi-hop question answering
+
+Fine-tunes Llama-3.2-3B using QLoRA and GRPO on three multi-hop reasoning datasets. Eight reward functions enforce both answer quality and structured reasoning format.
+
+| Dataset | Size | Description |
+|---------|------|-------------|
+| [HotpotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | 90,447 | Multi-hop questions requiring reasoning over two Wikipedia paragraphs |
+| [FreshQA](https://huggingface.co/datasets/vtllms/sealqa) | 254 | Search-augmented QA benchmark for long-context, multi-document reasoning |
+| [MuSiQue](https://huggingface.co/datasets/dgslibisey/MuSiQue) | 19,938 | Multi-hop questions with explicit supporting facts and compositional reasoning |
+
+### Medical question answering
+
+Fine-tunes Llama-3.2-3B using QLoRA and GRPO on three biomedical QA datasets. Uses the same eight reward function architecture as multi-hop QA, with LLM-as-a-Judge evaluation tailored for biomedical reasoning.
+
+| Dataset | Size | Description |
+|---------|------|-------------|
+| [MedQA](https://huggingface.co/datasets/bigbio/med_qa) | 10,178 | USMLE-style multiple-choice medical questions |
+| [BioASQ](https://huggingface.co/datasets/enelpol/rag-mini-bioasq) | 4,012 | Free-text biomedical questions from PubMed literature |
+| [PubMedQA](https://huggingface.co/datasets/qiaojin/PubMedQA) | 211,269 | Research article question answering from PubMed abstracts |
+
+### Preference alignment
+
+Fine-tunes language models using human preference signals. All methods use QLoRA (4-bit quantization) via Unsloth and TRL trainers.
+
+| Algorithm | Description | Datasets |
+|-----------|-------------|---------|
+| **DPO** | Directly optimizes on `{prompt, chosen, rejected}` triplets without a separate reward model | UltraFeedback, WebGPT Comparisons |
+| **ORPO** | Combines SFT and preference alignment in a single training step via odds ratio penalty | UltraFeedback |
+| **KTO** | Trains on binary desirability labels using prospect theory-inspired loss, without paired data | KTO-Mix-14k |
+| **PPO** | Uses a reward model to score rollouts with policy gradient updates and a KL penalty | UltraFeedback, WebGPT Comparisons |
+
+---
+
+## Core dependencies
+
+| Library | Role |
+|---------|------|
+| [HuggingFace TRL](https://huggingface.co/docs/trl) | `SFTTrainer`, `GRPOTrainer`, `DPOTrainer`, `PPOTrainer`, and config classes for all paradigms |
+| [PEFT](https://huggingface.co/docs/peft) | LoRA, QLoRA, DoRA, P-Tuning, and Prefix-Tuning adapter implementations |
+| [Unsloth](https://github.com/unslothai/unsloth) | Memory-efficient model loading and GRPO/alignment training via `FastLanguageModel` |
+| [DeepEval](https://deepeval.com/) | LLM-as-a-Judge reward functions: GEval RAG, Summarization, Answer Relevancy |
+| [Evidently AI](https://www.evidentlyai.com/) | `CorrectnessLLMEval` reward metric for multi-hop and medical QA pipelines |
+
+---
+
+## GPU memory requirements
+
+<Note>
+  Reduce `per_device_train_batch_size` to `1` and increase `gradient_accumulation_steps` if you run out of VRAM.
+</Note>
+
+| Technique | Typical VRAM |
+|-----------|-------------|
+| SFT LoRA (3B model) | 8–12 GB |
+| SFT QLoRA (3B model) | 6–8 GB |
+| GRPO QLoRA (3B model) | 12–16 GB |
+| DPO QLoRA (7B model) | 16–24 GB |
+| ORPO QLoRA (7B model) | 16–24 GB |
+| KTO QLoRA (1.5B model) | 8–12 GB |
+| PPO (8B model) | 40+ GB |

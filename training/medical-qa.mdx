@@ -1,0 +1,136 @@
+---
+title: "Medical QA with GRPO and Biomedical Evaluation"
+description: "Fine-tune Llama-3.2-3B on MedQA, BioASQ, and PubMedQA using GRPO with eight LLM-as-a-Judge reward functions tuned for biomedical reasoning."
+---
+
+Medical and biomedical QA demands precise factual grounding and clinical reasoning that general-purpose reward signals struggle to capture. This module fine-tunes `unsloth/Llama-3.2-3B-Instruct` using QLoRA and GRPO on three biomedical datasets, using eight reward functions tuned for medical evaluation.
+
+<Warning>
+These pipelines use DeepEval and Evidently AI LLM-as-a-Judge reward functions that call the OpenAI API. Set your key before running:
+
+```bash
+export OPENAI_API_KEY="your-key"
+```
+</Warning>
+
+## Datasets
+
+| Dataset | Size | Description |
+|---------|------|-------------|
+| [MedQA](https://huggingface.co/datasets/bigbio/med_qa) | 10,178 | USMLE-style multiple-choice medical questions covering clinical diagnosis, treatment, and pharmacology |
+| [BioASQ](https://huggingface.co/datasets/enelpol/rag-mini-bioasq) | 4,012 | Free-text biomedical questions sourced from PubMed literature (public substitute dataset) |
+| [PubMedQA](https://huggingface.co/datasets/qiaojin/PubMedQA) | 211,269 | Research article QA derived from PubMed abstracts; questions ask whether a finding supports, contradicts, or is inconclusive |
+
+<Note>
+The BioASQ pipeline uses the publicly available `enelpol/rag-mini-bioasq` dataset as a substitute for the official BioASQ benchmark, which requires registration. The subset covers the same biomedical QA format and can be swapped with the official data by overriding `dataset_id` in `config.yaml`.
+</Note>
+
+## Reward functions
+
+The eight reward functions are identical in structure to the multi-hop QA module but are re-instantiated from the `medical_question_answering` module so that future domain-specific tuning remains isolated.
+
+### Correctness rewards
+
+| Reward function | Framework | Description |
+|-----------------|-----------|-------------|
+| `DeepEvalGEvalRAGReward` | DeepEval | GEval with a biomedical LLM-as-a-Judge criterion: evaluates whether the response **correctly addresses the medical question** given the provided context |
+| `DeepEvalSummarizationReward` | DeepEval | Faithfulness metric measuring how well the answer captures the key facts from the source context |
+| `DeepEvalAnswerRelevancyReward` | DeepEval | Measures relevance of the response to the clinical or research question |
+| `EvidentlyCorrectnessLLMReward` | Evidently AI | CorrectnessLLMEval scoring answer accuracy against ground-truth medical answers |
+
+### Format rewards
+
+| Reward function | Description |
+|-----------------|-------------|
+| `ReasoningTagsReward` | Validates presence and nesting of `<reasoning>` and `<answer>` tags |
+| `MultilineComplianceReward` | Rewards multi-line responses with structured depth |
+| `StructureValidationReward` | Validates overall response structure against the expected schema |
+| `ResponseFormatReward` | Enforces consistent formatting conventions |
+
+The key difference from multi-hop QA: the `DeepEvalGEvalRAGReward` GEval criterion reads "correctly addresses the medical question" rather than the generic RAG evaluation phrasing, making the judge sensitive to clinical correctness.
+
+## Running the pipelines
+
+```bash
+# MedQA — USMLE-style multiple-choice (10k examples)
+python src/llm_finetuning/medical_question_answering/medqa/train.py
+
+# BioASQ — free-text biomedical questions from PubMed
+python src/llm_finetuning/medical_question_answering/bioasq/train.py
+
+# PubMedQA — research article QA (211k examples)
+python src/llm_finetuning/medical_question_answering/pubmedqa/train.py
+```
+
+## Configuration
+
+All three pipelines share the same hyperparameter structure. Here is the MedQA config:
+
+```yaml
+model_id: "unsloth/Llama-3.2-3B-Instruct"
+max_seq_length: 2048
+output_dir: "./outputs/medical_question_answering/medqa"
+dataset_split: "train"
+
+learning_rate: 5.0e-6
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+num_generations: 4
+max_prompt_length: 512
+max_completion_length: 512
+num_train_epochs: 1
+
+lora_r: 8
+lora_alpha: 8
+target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+```
+
+Override `dataset_id` and `dataset_split` in `config.yaml` to point to a different biomedical dataset without modifying any Python code.
+
+## Training script pattern
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+from unsloth import FastLanguageModel
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=config["model_id"],
+    max_seq_length=config["max_seq_length"],
+    load_in_4bit=True,
+)
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=0,
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        DeepEvalGEvalRAGReward(),
+        DeepEvalSummarizationReward(),
+        DeepEvalAnswerRelevancyReward(),
+        EvidentlyCorrectnessLLMReward(),
+        ReasoningTagsReward(),
+        MultilineComplianceReward(),
+        StructureValidationReward(),
+        ResponseFormatReward(),
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+
+trainer.train()
+```
+
+## Output
+
+Adapter weights and the tokenizer are saved to `./outputs/medical_question_answering/<dataset>/` by default. Change `output_dir` in `config.yaml` to save elsewhere.
+
+## GPU memory
+
+GRPO with QLoRA on a 3B model requires approximately 12–16 GB of VRAM. Reduce `per_device_train_batch_size` to `1` and increase `gradient_accumulation_steps` to compensate on smaller GPUs.

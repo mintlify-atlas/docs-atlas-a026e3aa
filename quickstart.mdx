@@ -1,81 +1,257 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Get started with LLM Fine-tuning"
+description: "Install LLM Fine-tuning with uv, configure credentials, and run your first supervised fine-tuning or GRPO pipeline in under 10 minutes."
 ---
 
-## Get started in three steps
+This quickstart walks you through installing the project with `uv`, setting up HuggingFace credentials, and executing your first training pipeline. By the end you will have a working fine-tuned adapter saved to `./outputs/`. All 39 pipelines follow the same pattern, so once you run one, the rest are identical in structure.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install uv and clone the repository">
+    The project uses [uv](https://github.com/astral-sh/uv) for fast, reproducible dependency management. Install it with `pip` if you do not already have it, then clone the repository.
 
-### Step 1: Set up your local environment
+    ```bash
+    pip install uv
+    git clone https://github.com/avnlp/llm-finetuning
+    cd llm-finetuning
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Install dependencies">
+    `uv sync` creates a virtual environment and installs all runtime dependencies — `transformers`, `trl`, `peft`, `unsloth`, `deepeval`, `evidently`, and more — in one step.
 
-### Step 2: Deploy your changes
+    ```bash
+    uv sync
+    source .venv/bin/activate
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    For linting and type-checking tools (Ruff, MyPy, Bandit), include the dev group:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    uv sync --dev
+    source .venv/bin/activate
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Set up credentials">
+    All pipelines download model weights from HuggingFace. Gated models (Llama, Mistral, Gemma) require you to be logged in.
 
-### Step 3: Go live
+    ```bash
+    # Required for gated HuggingFace models (Llama, Mistral, Gemma, etc.)
+    huggingface-cli login
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    <Note>
+      An `OPENAI_API_KEY` is required only for `multi_hop_question_answering` and `medical_question_answering` pipelines, which use DeepEval and Evidently LLM-as-a-Judge reward functions. SFT, GRPO math reasoning, and preference alignment pipelines do not need it.
+    </Note>
 
-## Next steps
+    For pipelines that do require it, export the key before running:
 
-Now that you have your docs running, explore these key features:
+    ```bash
+    # Required only for multi_hop_question_answering and medical_question_answering
+    export OPENAI_API_KEY="your-key"
+    ```
+  </Step>
 
-<CardGroup cols={2}>
+  <Step title="Run your first pipeline">
+    Each pipeline is a single Python script that reads its `config.yaml`, downloads the dataset, trains the model, and writes adapter weights to `./outputs/`. Pick one of the options below.
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+    <Tabs>
+      <Tab title="SFT — LoRA on ARC">
+        The recommended starting point. Fine-tunes Llama-3.2-3B with LoRA (rank 8, alpha 32) on the [ARC-Challenge](https://huggingface.co/datasets/allenai/ai2_arc) science QA dataset. Requires 8–12 GB VRAM.
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+        ```bash
+        python src/llm_finetuning/supervised_finetuning/lora/arc/train.py
+        ```
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+        The script reads `src/llm_finetuning/supervised_finetuning/lora/arc/config.yaml`:
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+        ```yaml
+        model_id: "meta-llama/Llama-3.2-3B"
+        dataset_name: "allenai/ai2_arc"
+        dataset_config: "ARC-Challenge"
+        split: "train"
+        output_dir: "./outputs/supervised_finetuning/lora/arc"
 
-</CardGroup>
+        num_train_epochs: 3
+        per_device_train_batch_size: 1
+        gradient_accumulation_steps: 8
+        learning_rate: 2.0e-4
+        save_strategy: "epoch"
+        logging_steps: 10
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+        lora_r: 8
+        lora_alpha: 32
+        lora_dropout: 0.05
+        target_modules:
+          - q_proj
+          - k_proj
+          - v_proj
+          - o_proj
+          - gate_proj
+          - up_proj
+          - down_proj
+        ```
+
+        Adapter weights are saved to `./outputs/supervised_finetuning/lora/arc` after training.
+      </Tab>
+
+      <Tab title="GRPO — GSM8K">
+        Fine-tunes with Group Relative Policy Optimization on [GSM8K](https://huggingface.co/datasets/openai/gsm8k) grade-school math. Uses Unsloth's `FastLanguageModel` with 4-bit quantization. Requires 12–16 GB VRAM.
+
+        ```bash
+        python src/llm_finetuning/math_reasoning/grpo/gsm8k/train.py --config config.yaml
+        ```
+
+        To switch to a model-specific config:
+
+        ```bash
+        python src/llm_finetuning/math_reasoning/grpo/gsm8k/train.py --config config_mistral7b.yaml
+        ```
+
+        The default `config.yaml` for this pipeline:
+
+        ```yaml
+        model_id: "unsloth/Llama-3.2-3B-Instruct"
+        max_seq_length: 2048
+        output_dir: "./outputs/math_reasoning/grpo/gsm8k"
+        dataset_split: "train"
+        learning_rate: 5.0e-6
+        per_device_train_batch_size: 1
+        gradient_accumulation_steps: 4
+        num_generations: 4
+        max_prompt_length: 256
+        max_completion_length: 512
+        num_train_epochs: 1
+        max_grad_norm: 0.1
+        lora_r: 8
+        lora_alpha: 8
+        target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+        ```
+      </Tab>
+
+      <Tab title="Preference alignment — DPO">
+        Fine-tunes Zephyr-7B using Direct Preference Optimization on [UltraFeedback](https://huggingface.co/datasets/HuggingFaceH4/ultrafeedback_binarized) (~60k examples). Requires 16–24 GB VRAM.
+
+        ```bash
+        python src/llm_finetuning/preference_alignment/dpo/ultrafeedback/train.py
+        ```
+
+        To use WebGPT Comparisons instead:
+
+        ```bash
+        python src/llm_finetuning/preference_alignment/dpo/webgpt/train.py
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+---
+
+## Overriding config.yaml settings
+
+You can change the dataset, model, or any hyperparameter by editing the pipeline's `config.yaml` — no code changes required.
+
+### Changing the dataset
+
+**For `supervised_finetuning/` pipelines** (uses the `split` key):
+
+```yaml
+dataset_id: "allenai/ai2_arc"
+dataset_subset: "ARC-Challenge"
+split: "train"
+```
+
+**For GRPO, math reasoning, medical QA, and preference alignment pipelines** (uses the `dataset_split` key):
+
+```yaml
+dataset_id: "openai/gsm8k"
+dataset_subset: "main"
+dataset_split: "train"
+```
+
+All three keys are optional. Omitting them falls back to each loader's built-in defaults.
+
+### Changing the base model
+
+Open the pipeline's `config.yaml` and update `model_id`:
+
+```yaml
+# Before
+model_id: "meta-llama/Llama-3.2-3B"
+
+# After
+model_id: "meta-llama/Llama-3.1-8B"
+```
+
+For GRPO and preference alignment pipelines, use Unsloth-quantized variants to reduce VRAM:
+
+```yaml
+model_id: "unsloth/Llama-3.1-8B-Instruct"
+```
+
+---
+
+## Output location
+
+All pipelines write adapter weights and the tokenizer to `./outputs/<module>/<method>/<dataset>/` by default. For example:
+
+- SFT LoRA on ARC → `./outputs/supervised_finetuning/lora/arc/`
+- GRPO on GSM8K → `./outputs/math_reasoning/grpo/gsm8k/`
+- DPO on UltraFeedback → `./outputs/preference_alignment/dpo/ultrafeedback/`
+
+Override the location by setting `output_dir` in `config.yaml`:
+
+```yaml
+output_dir: "./my_custom_output_dir"
+```
+
+---
+
+## GPU memory guidance
+
+Choose a pipeline that fits your available VRAM. Lower-memory techniques like QLoRA are available for most training paradigms.
+
+| Technique | Typical VRAM |
+|-----------|-------------|
+| SFT LoRA (3B model) | 8–12 GB |
+| SFT QLoRA (3B model) | 6–8 GB |
+| GRPO QLoRA (3B model) | 12–16 GB |
+| DPO QLoRA (7B model) | 16–24 GB |
+| ORPO QLoRA (7B model) | 16–24 GB |
+| KTO QLoRA (1.5B model) | 8–12 GB |
+| PPO (8B model) | 40+ GB |
+
+<Tip>
+  If you run out of memory, set `per_device_train_batch_size: 1` and increase `gradient_accumulation_steps` to maintain effective batch size.
+</Tip>
+
+---
+
+## Pipelines that require OPENAI_API_KEY
+
+The following pipeline groups use DeepEval or Evidently AI LLM-as-a-Judge reward functions, which call the OpenAI API during training. Set `OPENAI_API_KEY` before running any of these.
+
+<Warning>
+  Running multi-hop QA or medical QA pipelines without `OPENAI_API_KEY` will raise an authentication error at the first reward function call.
+</Warning>
+
+**Multi-hop question answering:**
+
+```bash
+export OPENAI_API_KEY="your-key"
+python src/llm_finetuning/multi_hop_question_answering/grpo/hotpotqa/train.py
+python src/llm_finetuning/multi_hop_question_answering/grpo/freshqa/train.py
+python src/llm_finetuning/multi_hop_question_answering/grpo/musique/train.py
+```
+
+**Medical question answering:**
+
+```bash
+export OPENAI_API_KEY="your-key"
+python src/llm_finetuning/medical_question_answering/medqa/train.py
+python src/llm_finetuning/medical_question_answering/bioasq/train.py
+python src/llm_finetuning/medical_question_answering/pubmedqa/train.py
+```
+
+All SFT, GRPO math reasoning, and preference alignment pipelines run without an OpenAI key.

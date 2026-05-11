@@ -1,0 +1,297 @@
+---
+title: "PEFT adapter methods: LoRA, QLoRA, DoRA, and more"
+description: "LLM Fine-tuning supports five PEFT adapter methods. Learn when to use LoRA, QLoRA, DoRA, P-Tuning, or Prefix-Tuning and how to configure each one."
+---
+
+Adapter-based fine-tuning keeps the base model weights frozen and trains only a small number of additional parameters, making it possible to fine-tune large language models on a single GPU. This project supports five adapter methods from the [PEFT library](https://huggingface.co/docs/peft): LoRA, QLoRA, DoRA, P-Tuning, and Prefix-Tuning. All methods use `SFTTrainer` from TRL and save only the adapter weights at the end of training, not a full model copy.
+
+<Tabs>
+  <Tab title="LoRA">
+
+## How LoRA works
+
+LoRA (Low-Rank Adaptation) inserts trainable low-rank decomposition matrices alongside the frozen weight matrices of the attention and feed-forward projection layers. For a weight matrix `W`, LoRA learns two matrices `A` and `B` such that the effective weight update is `W + α/r · BA`. Only `A` and `B` are updated during training; `W` remains frozen.
+
+The rank `r` controls the size of the update — lower rank means fewer trainable parameters and less expressive updates. The scaling factor `α` (lora_alpha) scales the magnitude of the update relative to the rank.
+
+### Configuration
+
+```yaml
+# config.yaml (lora/arc/config.yaml)
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+```
+
+```python
+from peft import LoraConfig, TaskType, get_peft_model
+
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=config["lora_dropout"],
+    bias="none",
+    target_modules=config["target_modules"],
+)
+model = get_peft_model(model, peft_config)
+```
+
+### VRAM usage
+
+Approximately 8–12 GB for Llama-3.2-3B with default settings.
+
+### When to use
+
+LoRA is the default choice for most fine-tuning tasks. It offers a strong balance between adapter quality and training efficiency, works with standard `bfloat16` precision, and is compatible with all five trainer types. Start with LoRA unless VRAM is the primary constraint.
+
+  </Tab>
+  <Tab title="QLoRA">
+
+## How QLoRA works
+
+QLoRA combines LoRA with 4-bit NF4 quantization of the base model via BitsAndBytes. The frozen base model weights are loaded in 4-bit precision (reducing their memory footprint by roughly 75%), while the LoRA adapter weights are maintained in full precision. Gradients flow through the quantized weights using double quantization and paged optimizers to stay within VRAM limits.
+
+The LoRA configuration is identical to plain LoRA; the quantization is applied at model load time.
+
+### Configuration
+
+```yaml
+# config.yaml (qlora/arc/config.yaml)
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+```
+
+```python
+import torch
+from peft import LoraConfig, TaskType, get_peft_model
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_use_double_quant=True,
+)
+model = AutoModelForCausalLM.from_pretrained(
+    config["model_id"],
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=config["lora_dropout"],
+    bias="none",
+    target_modules=config["target_modules"],
+)
+model = get_peft_model(model, peft_config)
+```
+
+### VRAM usage
+
+Approximately 6–8 GB for Llama-3.2-3B — lower than plain LoRA because the base model weights are quantized to 4 bits.
+
+### When to use
+
+Use QLoRA when VRAM is limited or when you want to fine-tune a model that is too large to load in bfloat16. QLoRA is the default adapter in all GRPO and preference alignment pipelines in this project (multi-hop QA, medical QA, DPO, ORPO, KTO, PPO).
+
+<Note>
+QLoRA introduces a small quality gap relative to full-precision LoRA due to
+quantization noise. For tasks where maximum adapter quality matters and VRAM is
+available, prefer LoRA over QLoRA.
+</Note>
+
+  </Tab>
+  <Tab title="DoRA">
+
+## How DoRA works
+
+DoRA (Weight-Decomposed LoRA) decomposes each weight matrix into a magnitude component and a direction component, then applies LoRA exclusively to the directional component. The magnitude is updated separately with a scalar parameter per output dimension. This decomposition allows DoRA to express a wider range of weight updates than standard LoRA at the same rank, at the cost of a small number of additional scalar parameters.
+
+In PEFT, DoRA is enabled by adding `use_dora=True` to the standard `LoraConfig` — the rest of the configuration is identical to LoRA.
+
+### Configuration
+
+```yaml
+# config.yaml (dora/arc/config.yaml)
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+use_dora: true
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+```
+
+```python
+from peft import LoraConfig, TaskType, get_peft_model
+
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=config["lora_dropout"],
+    bias="none",
+    use_dora=config["use_dora"],   # True
+    target_modules=config["target_modules"],
+)
+model = get_peft_model(model, peft_config)
+```
+
+### VRAM usage
+
+Comparable to LoRA (8–12 GB for Llama-3.2-3B). The additional magnitude scalars add negligible memory overhead.
+
+### When to use
+
+Use DoRA when standard LoRA under-fits the task and you want more expressive weight updates without increasing rank. DoRA has been shown to match or exceed LoRA quality at the same rank on several benchmarks, with no change to the training pipeline other than the `use_dora=True` flag.
+
+  </Tab>
+  <Tab title="P-Tuning">
+
+## How P-Tuning works
+
+P-Tuning trains a small multi-layer perceptron (the "prompt encoder") that maps a set of learnable embedding vectors to continuous prompt representations. These virtual tokens are prepended to the input sequence at every forward pass. All base model parameters remain frozen; only the encoder MLP parameters are updated during training.
+
+Unlike hard prompt tuning (which trains discrete token embeddings directly), P-Tuning's encoder network allows the virtual token representations to be a non-linear function of the learnable inputs, which can improve optimization stability.
+
+### Configuration
+
+```yaml
+# config.yaml (p_tuning/arc/config.yaml)
+num_virtual_tokens: 20
+encoder_hidden_size: 128
+```
+
+```python
+from peft import PromptEncoderConfig, TaskType, get_peft_model
+
+peft_config = PromptEncoderConfig(
+    task_type=TaskType.CAUSAL_LM,
+    num_virtual_tokens=config["num_virtual_tokens"],
+    encoder_hidden_size=config["encoder_hidden_size"],
+)
+model = get_peft_model(model, peft_config)
+```
+
+<ParamField path="num_virtual_tokens" type="int" default="20">
+  Number of soft prompt tokens prepended to every input. More tokens provide more
+  capacity for the soft prompt but increase sequence length.
+</ParamField>
+
+<ParamField path="encoder_hidden_size" type="int" default="128">
+  Hidden dimension of the MLP encoder that produces the virtual token embeddings.
+</ParamField>
+
+### VRAM usage
+
+Very low — only the encoder MLP parameters are trainable. The base model is loaded in bfloat16 and fully frozen.
+
+### When to use
+
+Use P-Tuning when you want the smallest possible number of trainable parameters, or when the task is well-suited to prompt-style adaptation (e.g., classification, structured output). P-Tuning is less expressive than LoRA for tasks requiring deep knowledge editing, but it is fast to train and easy to swap out.
+
+  </Tab>
+  <Tab title="Prefix-Tuning">
+
+## How Prefix-Tuning works
+
+Prefix-Tuning prepends a set of trainable prefix vectors to the key and value tensors at every attention layer in the model. Unlike P-Tuning, which operates at the input embedding level, Prefix-Tuning injects soft prompts directly into the attention computation at each layer. All base model weights remain frozen; only the prefix vectors are trained.
+
+Because the prefix is applied at every layer, Prefix-Tuning has more influence over the model's intermediate representations than input-level soft prompts, making it effective for sequence-to-sequence tasks.
+
+### Configuration
+
+```yaml
+# config.yaml (prefix_tuning/arc/config.yaml)
+num_virtual_tokens: 20
+```
+
+```python
+from peft import PrefixTuningConfig, TaskType, get_peft_model
+
+peft_config = PrefixTuningConfig(
+    task_type=TaskType.CAUSAL_LM,
+    num_virtual_tokens=config["num_virtual_tokens"],
+)
+model = get_peft_model(model, peft_config)
+```
+
+<ParamField path="num_virtual_tokens" type="int" default="20">
+  Number of prefix vectors prepended to the K/V tensors at every attention layer.
+  Each prefix vector has the same dimension as the model's attention heads.
+</ParamField>
+
+### VRAM usage
+
+Low — only the prefix vectors are trained. The total number of trainable parameters is `num_virtual_tokens × num_layers × 2 × head_dim × num_heads`.
+
+### When to use
+
+Use Prefix-Tuning for sequence-to-sequence tasks or when you want attention-level adaptation rather than embedding-level adaptation. It is particularly effective for generation tasks where controlling the model's intermediate context at every layer is beneficial.
+
+  </Tab>
+</Tabs>
+
+## Comparison table
+
+| Technique | Trainable params | Quantized | VRAM (3B) | Best for |
+|---|---|---|---|---|
+| LoRA | Low-rank `A`, `B` matrices per target module | No | 8–12 GB | General purpose, best quality/efficiency tradeoff |
+| QLoRA | Same as LoRA | Yes (4-bit NF4) | 6–8 GB | Limited VRAM, larger models |
+| DoRA | Magnitude scalars + LoRA direction matrices | No | 8–12 GB | More expressive updates at same rank as LoRA |
+| P-Tuning | Prompt encoder MLP | No | Very low | Minimal param overhead, prompt-style adaptation |
+| Prefix-Tuning | Prefix K/V vectors per attention layer | No | Low | Sequence-to-sequence, attention-level adaptation |
+
+## Target modules
+
+LoRA, QLoRA, and DoRA all use the same `target_modules` list, which selects which linear projection layers receive LoRA adapters. The default list covers all attention and feed-forward projections in Llama-style models:
+
+```yaml
+target_modules:
+  - q_proj    # query projection (attention)
+  - k_proj    # key projection (attention)
+  - v_proj    # value projection (attention)
+  - o_proj    # output projection (attention)
+  - gate_proj # gate projection (SwiGLU feed-forward)
+  - up_proj   # up projection (SwiGLU feed-forward)
+  - down_proj # down projection (SwiGLU feed-forward)
+```
+
+<Tip>
+Applying LoRA to all seven modules (the default) gives the most expressive
+adapter. To reduce trainable parameters, restrict to attention-only modules
+(`q_proj`, `k_proj`, `v_proj`, `o_proj`). The optimal set is
+task-dependent — start with all seven and ablate if needed.
+</Tip>
+
+<Note>
+P-Tuning and Prefix-Tuning do not use `target_modules` — they operate on the
+input sequence or the attention K/V tensors respectively, and are configured
+entirely through `num_virtual_tokens` (and `encoder_hidden_size` for P-Tuning).
+</Note>

@@ -1,0 +1,222 @@
+---
+title: "Config field reference for all pipelines"
+description: "Complete YAML configuration reference for all 39 LLM fine-tuning pipelines, covering SFT, GRPO, DPO, ORPO, KTO, and PPO trainers with field types and defaults."
+---
+
+Every pipeline in this repo is controlled by a single `config.yaml` file located next to the pipeline's `train.py`. When `train.py` starts, it loads that file and builds a typed config object — no CLI flags, no environment overrides beyond what you put in the YAML. To change behaviour, edit the file (or copy it and pass the new path with `--config`). Fields you omit fall back to the loader's class-level defaults.
+
+<Note>
+`supervised_finetuning` uses the key `split` to select the dataset split. Every other module (`math_reasoning`, `multi_hop_question_answering`, `medical_question_answering`, `preference_alignment`) uses `dataset_split` instead. Using the wrong key silently falls back to the loader default.
+</Note>
+
+## Common fields
+
+These fields appear in every `config.yaml` regardless of module.
+
+| Field | Type | Description |
+|---|---|---|
+| `model_id` | `str` | HuggingFace model identifier used to load the model and tokenizer. |
+| `output_dir` | `str` | Path where the trained model and tokenizer are saved after training. |
+| `learning_rate` | `float` | Optimizer learning rate. |
+| `num_train_epochs` | `int` | Number of full passes over the training dataset. |
+| `per_device_train_batch_size` | `int` | Batch size per GPU device. |
+| `gradient_accumulation_steps` | `int` | Forward passes before each optimizer step. Effective batch size = `per_device_train_batch_size × gradient_accumulation_steps`. |
+| `logging_steps` | `int` | Log training metrics every N steps. |
+| `dataset_id` | `str \| null` | Optional HuggingFace dataset ID override. Omit to use the loader's built-in default. |
+| `dataset_subset` | `str \| null` | Optional HuggingFace dataset config/subset override. Omit to use the loader's built-in default. |
+
+---
+
+## Fields by module type
+
+<Tabs>
+  <Tab title="SFT fields">
+    Used by all five adapter methods in `supervised_finetuning/`: LoRA, QLoRA, DoRA, P-Tuning, and Prefix-Tuning.
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `split` | `str` | `"train"` | Dataset split to load. **Note**: this module uses `split`, not `dataset_split`. |
+    | `save_strategy` | `str` | `"epoch"` | When to save checkpoints: `"epoch"` or `"steps"`. |
+
+    ### LoRA / QLoRA / DoRA
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `lora_r` | `int` | `8` | LoRA rank. Higher values add more trainable parameters and increase expressiveness. |
+    | `lora_alpha` | `int` | `32` | LoRA scaling factor. Effective scale = `lora_alpha / lora_r`. |
+    | `lora_dropout` | `float` | `0.05` | Dropout applied to LoRA weight matrices during training. |
+    | `use_dora` | `bool` | `false` | Enable DoRA (weight decomposition LoRA). Only used in DoRA configs. |
+    | `target_modules` | `list[str]` | `[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]` | Transformer modules to apply LoRA adapters to. |
+
+    ### P-Tuning
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `num_virtual_tokens` | `int` | `20` | Number of trainable soft prompt tokens prepended to the input sequence. |
+    | `encoder_hidden_size` | `int` | `128` | Hidden size of the MLP encoder that generates the soft prompt embeddings. |
+
+    ### Prefix-Tuning
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `num_virtual_tokens` | `int` | `20` | Number of prefix tokens prepended at each transformer layer. |
+  </Tab>
+
+  <Tab title="GRPO fields">
+    Used by `math_reasoning/grpo/`, `multi_hop_question_answering/grpo/`, and `medical_question_answering/grpo/`.
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `max_seq_length` | `int` | `2048` | Maximum sequence length passed to `FastLanguageModel.from_pretrained`. |
+    | `dataset_split` | `str` | `"train"` | Dataset split passed to `loader.load(...)`. |
+    | `num_generations` | `int` | `4` | Completions generated per prompt. GRPO compares these to compute relative rewards. |
+    | `max_prompt_length` | `int` | `512` | Maximum number of tokens in the prompt. Longer prompts are truncated. |
+    | `max_completion_length` | `int` | `512` | Maximum number of tokens in each generated completion. |
+    | `max_grad_norm` | `float` | `0.1` | Gradient clipping norm. Used by `math_reasoning` only. |
+    | `lora_r` | `int` | `8` | QLoRA rank. |
+    | `lora_alpha` | `int` | `8` | QLoRA scaling factor. |
+    | `target_modules` | `list[str]` | `[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]` | Modules to apply QLoRA adapters to. |
+  </Tab>
+
+  <Tab title="Preference alignment">
+    Used by all pipelines under `preference_alignment/`. Each sub-trainer has its own field set.
+
+    ### DPO
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `max_seq_length` | `int` | `4096` | Maximum sequence length. |
+    | `dataset_split` | `str` | `"train_prefs"` | Dataset split. Default varies by dataset: `train_prefs` for UltraFeedback, `train` for WebGPT. |
+    | `dpo_beta` | `float` | `0.1` | KL divergence penalty coefficient. Higher values keep the policy closer to the reference model. |
+    | `lora_r` | `int` | `64` | QLoRA rank (higher than GRPO to support larger preference datasets). |
+    | `lora_alpha` | `int` | `64` | QLoRA scaling factor. |
+    | `target_modules` | `list[str]` | same as GRPO | Modules to apply QLoRA adapters to. |
+
+    ### ORPO
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `max_seq_length` | `int` | `4096` | Maximum sequence length. |
+    | `dataset_split` | `str` | `"train_prefs"` | Dataset split passed to `loader.load(...)`. |
+    | `orpo_beta` | `float` | `0.1` | ORPO odds-ratio penalty coefficient. |
+    | `lora_r` | `int` | `16` | QLoRA rank. |
+    | `lora_alpha` | `int` | `16` | QLoRA scaling factor. |
+    | `target_modules` | `list[str]` | same as GRPO | Modules to apply QLoRA adapters to. |
+
+    ### KTO
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `max_seq_length` | `int` | `4096` | Maximum sequence length. |
+    | `dataset_split` | `str` | `"train"` | Dataset split passed to `loader.load(...)`. |
+    | `lora_r` | `int` | `16` | QLoRA rank. |
+    | `lora_alpha` | `int` | `16` | QLoRA scaling factor. |
+    | `target_modules` | `list[str]` | same as GRPO | Modules to apply QLoRA adapters to. |
+
+    ### PPO
+
+    | Field | Type | Default | Description |
+    |---|---|---|---|
+    | `dataset_split` | `str` | `"train"` | Dataset split. Default varies: `train_prefs` for UltraFeedback, `train` for WebGPT. |
+    | `batch_size` | `int` | `64` | Total rollout batch size. |
+    | `mini_batch_size` | `int` | `1` | Mini-batch size for the PPO optimization step. |
+    | `ppo_epochs` | `int` | `4` | Number of optimization epochs per rollout batch. |
+    | `max_new_tokens` | `int` | `128` | Maximum tokens to generate per step in the rollout loop. |
+  </Tab>
+</Tabs>
+
+---
+
+## Example configs
+
+<CodeGroup>
+
+```yaml SFT LoRA (arc)
+model_id: "meta-llama/Llama-3.2-3B"
+dataset_name: "allenai/ai2_arc"
+dataset_config: "ARC-Challenge"
+split: "train"
+output_dir: "./outputs/supervised_finetuning/lora/arc"
+
+num_train_epochs: 3
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-4
+save_strategy: "epoch"
+logging_steps: 10
+
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+```
+
+```yaml GRPO (gsm8k)
+model_id: "unsloth/Llama-3.2-3B-Instruct"
+max_seq_length: 2048
+output_dir: "./outputs/math_reasoning/grpo/gsm8k"
+dataset_split: "train"
+learning_rate: 5.0e-6
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+num_generations: 4
+max_prompt_length: 256
+max_completion_length: 512
+num_train_epochs: 1
+max_grad_norm: 0.1
+lora_r: 8
+lora_alpha: 8
+target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+```
+
+</CodeGroup>
+
+---
+
+## Common overrides
+
+### Change the base model
+
+Update `model_id` in `config.yaml` to any HuggingFace model identifier:
+
+```yaml
+model_id: "mistralai/Mistral-7B-Instruct-v0.3"
+```
+
+The tokenizer is loaded from the same identifier, so no other change is needed.
+
+### Override the dataset
+
+All three dataset keys can be set independently. Any key you omit preserves the loader's built-in default.
+
+<Tabs>
+  <Tab title="SFT pipelines">
+    ```yaml
+    dataset_id: "allenai/ai2_arc"
+    dataset_subset: "ARC-Easy"
+    split: "train"
+    ```
+  </Tab>
+  <Tab title="GRPO / DPO / ORPO / KTO / PPO">
+    ```yaml
+    dataset_id: "openai/gsm8k"
+    dataset_subset: "main"
+    dataset_split: "train"
+    ```
+  </Tab>
+</Tabs>
+
+### Run with a different config file
+
+Pass the `--config` flag to any pipeline's `train.py`:
+
+```bash
+python train.py --config config_mistral7b.yaml
+```

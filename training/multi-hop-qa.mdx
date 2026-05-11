@@ -1,0 +1,138 @@
+---
+title: "Multi-Hop QA with GRPO and LLM-as-a-Judge"
+description: "Fine-tune Llama-3.2-3B on HotpotQA, FreshQA, and MuSiQue using GRPO with eight reward functions including DeepEval and Evidently AI LLM judges."
+---
+
+Multi-hop reasoning requires a model to synthesize information from multiple sources before producing an answer. This module fine-tunes `unsloth/Llama-3.2-3B-Instruct` using QLoRA and GRPO on three multi-hop QA datasets. Eight reward functions — four measuring correctness through LLM judges and four enforcing structured output format — provide dense supervision at every training step.
+
+<Warning>
+These pipelines use DeepEval and Evidently AI LLM-as-a-Judge reward functions that call the OpenAI API. Set your key before running:
+
+```bash
+export OPENAI_API_KEY="your-key"
+```
+</Warning>
+
+## Datasets
+
+| Dataset | Size | Description |
+|---------|------|-------------|
+| [HotpotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | 90,447 | Multi-hop questions requiring reasoning over two Wikipedia paragraphs; includes a distractor configuration with irrelevant paragraphs mixed in |
+| [FreshQA](https://huggingface.co/datasets/vtllms/sealqa) | 254 | Search-augmented QA benchmark for long-context, multi-document reasoning under noisy retrieval |
+| [MuSiQue](https://huggingface.co/datasets/dgslibisey/MuSiQue) | 19,938 | Multi-hop questions with explicit supporting facts and compositional reasoning structure |
+
+## Reward functions
+
+### Correctness rewards
+
+These four functions evaluate the quality and accuracy of the model's answer by calling an LLM judge (via DeepEval or Evidently AI).
+
+| Reward function | Framework | Description |
+|-----------------|-----------|-------------|
+| `DeepEvalGEvalRAGReward` | DeepEval | GEval metric with a custom LLM-as-a-Judge instruction tailored for RAG evaluation; assesses whether the answer correctly addresses the multi-hop question |
+| `DeepEvalSummarizationReward` | DeepEval | Summarization metric measuring faithfulness to the provided source context |
+| `DeepEvalAnswerRelevancyReward` | DeepEval | Answer Relevancy metric measuring how relevant the response is to the question |
+| `EvidentlyCorrectnessLLMReward` | Evidently AI | CorrectnessLLMEval metric for answer accuracy scoring against the ground truth |
+
+### Format rewards
+
+These four functions score the structural quality of the response without calling an external API.
+
+| Reward function | Description |
+|-----------------|-------------|
+| `ReasoningTagsReward` | Validates presence and proper nesting of `<reasoning>` and `<answer>` tags |
+| `MultilineComplianceReward` | Rewards multi-line structured responses with sufficient depth |
+| `StructureValidationReward` | Validates overall response structure against the expected schema |
+| `ResponseFormatReward` | Enforces consistent formatting conventions across the response |
+
+## Running the pipelines
+
+```bash
+# HotpotQA (90k multi-hop examples with distractor paragraphs)
+python src/llm_finetuning/multi_hop_question_answering/grpo/hotpotqa/train.py
+
+# FreshQA (search-augmented, noisy retrieval setting)
+python src/llm_finetuning/multi_hop_question_answering/grpo/freshqa/train.py
+
+# MuSiQue (compositional multi-hop with explicit supporting facts)
+python src/llm_finetuning/multi_hop_question_answering/grpo/musique/train.py
+```
+
+<Note>
+HotpotQA has two configurations: `fullwiki` (full Wikipedia as evidence) and `distractor` (two gold paragraphs plus eight distractors). The default dataset subset used by the `HotpotQALoader` is `distractor`, which is the standard evaluation setting for multi-hop retrieval robustness. Override it in `config.yaml` with `dataset_subset: "fullwiki"` if needed.
+</Note>
+
+## Configuration
+
+Each pipeline uses an identical config structure. Here is the HotpotQA example:
+
+```yaml
+model_id: "unsloth/Llama-3.2-3B-Instruct"
+max_seq_length: 2048
+output_dir: "./outputs/multi_hop_question_answering/grpo/hotpotqa"
+dataset_split: "train"
+
+learning_rate: 5.0e-6
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 4
+num_generations: 4
+max_prompt_length: 512
+max_completion_length: 512
+num_train_epochs: 1
+
+lora_r: 8
+lora_alpha: 8
+target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+```
+
+The `max_prompt_length` of 512 tokens accommodates multi-hop context passages. Increase it if your dataset examples include longer supporting documents, and reduce `per_device_train_batch_size` accordingly to manage VRAM.
+
+## Training script pattern
+
+The HotpotQA script (`hotpotqa/train.py`) initializes the model with Unsloth's 4-bit QLoRA, loads the dataset, and passes all eight reward functions to `GRPOTrainer`:
+
+```python
+from trl import GRPOConfig, GRPOTrainer
+from unsloth import FastLanguageModel
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=config["model_id"],
+    max_seq_length=config["max_seq_length"],
+    load_in_4bit=True,
+)
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=0,
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
+)
+
+trainer = GRPOTrainer(
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
+        DeepEvalGEvalRAGReward(),
+        DeepEvalSummarizationReward(),
+        DeepEvalAnswerRelevancyReward(),
+        EvidentlyCorrectnessLLMReward(),
+        ReasoningTagsReward(),
+        MultilineComplianceReward(),
+        StructureValidationReward(),
+        ResponseFormatReward(),
+    ],
+    args=training_args,
+    train_dataset=dataset,
+)
+
+trainer.train()
+```
+
+## Output
+
+Trained adapter weights and the tokenizer are saved to `./outputs/multi_hop_question_answering/grpo/<dataset>/` by default. Change `output_dir` in `config.yaml` to save elsewhere.
+
+## GPU memory
+
+GRPO with QLoRA on a 3B model requires approximately 12–16 GB of VRAM. Reduce `per_device_train_batch_size` to `1` and increase `gradient_accumulation_steps` to compensate on smaller GPUs.

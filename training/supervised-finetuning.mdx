@@ -1,0 +1,177 @@
+---
+title: "Supervised Fine-Tuning with Adapter Methods"
+description: "Run 25 SFT pipelines using LoRA, QLoRA, DoRA, P-Tuning, and Prefix-Tuning on five QA datasets with Llama-3.2-3B via TRL's SFTTrainer."
+---
+
+Supervised Fine-Tuning (SFT) with adapter methods lets you train only a small fraction of parameters while keeping the base model frozen. This module provides 25 ready-to-run pipelines — five adapter techniques applied to five question answering datasets — all using `SFTTrainer` from TRL with `apply_chat_template` formatting on `meta-llama/Llama-3.2-3B`.
+
+## Techniques
+
+| Technique | Description | Key parameter |
+|-----------|-------------|---------------|
+| **LoRA** | Injects trainable low-rank matrices into attention and feed-forward projection layers | `lora_r=8`, `lora_alpha=32` |
+| **QLoRA** | LoRA on a 4-bit NF4-quantized base model via BitsAndBytes; reduces VRAM by ~50% | `bnb_4bit_quant_type="nf4"` |
+| **DoRA** | Decomposes weight updates into magnitude and direction; applies LoRA to the directional component | `use_dora=True` |
+| **P-Tuning** | Trains a small MLP encoder that generates continuous soft-prompt embeddings prepended to every input | `num_virtual_tokens=20` |
+| **Prefix-Tuning** | Prepends trainable prefix vectors to the key and value tensors of every attention layer | `num_virtual_tokens=20` |
+
+## Datasets
+
+| Dataset | Domain | HuggingFace ID |
+|---------|--------|----------------|
+| **ARC** | Science QA | `allenai/ai2_arc` |
+| **TriviaQA** | Open-domain QA | `mandarjoshi/trivia_qa` |
+| **FactScore** | Factual QA | `awinml/factscore_unlabelled_alpaca_13b_retrieval` |
+| **PopQA** | Entity QA | `akariasai/PopQA` |
+| **Earnings Calls** | Financial QA | `lamini/earnings-calls-qa` |
+
+## All 25 pipelines
+
+All paths are relative to `src/llm_finetuning/supervised_finetuning/`.
+
+| Dataset | LoRA | QLoRA | DoRA | P-Tuning | Prefix-Tuning |
+|---------|------|-------|------|----------|---------------|
+| ARC | `lora/arc/train.py` | `qlora/arc/train.py` | `dora/arc/train.py` | `p_tuning/arc/train.py` | `prefix_tuning/arc/train.py` |
+| Earnings Calls | `lora/earnings_call/train.py` | `qlora/earnings_call/train.py` | `dora/earnings_call/train.py` | `p_tuning/earnings_call/train.py` | `prefix_tuning/earnings_call/train.py` |
+| FactScore | `lora/factscore/train.py` | `qlora/factscore/train.py` | `dora/factscore/train.py` | `p_tuning/factscore/train.py` | `prefix_tuning/factscore/train.py` |
+| PopQA | `lora/popqa/train.py` | `qlora/popqa/train.py` | `dora/popqa/train.py` | `p_tuning/popqa/train.py` | `prefix_tuning/popqa/train.py` |
+| TriviaQA | `lora/triviaqa/train.py` | `qlora/triviaqa/train.py` | `dora/triviaqa/train.py` | `p_tuning/triviaqa/train.py` | `prefix_tuning/triviaqa/train.py` |
+
+## Running a pipeline
+
+Each pipeline is self-contained — pick a technique and dataset combination, then run the corresponding script from the repository root.
+
+<CodeGroup>
+
+```bash LoRA
+python src/llm_finetuning/supervised_finetuning/lora/arc/train.py
+python src/llm_finetuning/supervised_finetuning/lora/triviaqa/train.py
+python src/llm_finetuning/supervised_finetuning/lora/factscore/train.py
+python src/llm_finetuning/supervised_finetuning/lora/popqa/train.py
+python src/llm_finetuning/supervised_finetuning/lora/earnings_call/train.py
+```
+
+```bash QLoRA
+python src/llm_finetuning/supervised_finetuning/qlora/arc/train.py
+python src/llm_finetuning/supervised_finetuning/qlora/triviaqa/train.py
+python src/llm_finetuning/supervised_finetuning/qlora/factscore/train.py
+python src/llm_finetuning/supervised_finetuning/qlora/popqa/train.py
+python src/llm_finetuning/supervised_finetuning/qlora/earnings_call/train.py
+```
+
+```bash DoRA
+python src/llm_finetuning/supervised_finetuning/dora/arc/train.py
+python src/llm_finetuning/supervised_finetuning/dora/triviaqa/train.py
+python src/llm_finetuning/supervised_finetuning/dora/factscore/train.py
+python src/llm_finetuning/supervised_finetuning/dora/popqa/train.py
+python src/llm_finetuning/supervised_finetuning/dora/earnings_call/train.py
+```
+
+```bash P-Tuning
+python src/llm_finetuning/supervised_finetuning/p_tuning/arc/train.py
+python src/llm_finetuning/supervised_finetuning/p_tuning/triviaqa/train.py
+python src/llm_finetuning/supervised_finetuning/p_tuning/factscore/train.py
+python src/llm_finetuning/supervised_finetuning/p_tuning/popqa/train.py
+python src/llm_finetuning/supervised_finetuning/p_tuning/earnings_call/train.py
+```
+
+```bash Prefix-Tuning
+python src/llm_finetuning/supervised_finetuning/prefix_tuning/arc/train.py
+python src/llm_finetuning/supervised_finetuning/prefix_tuning/triviaqa/train.py
+python src/llm_finetuning/supervised_finetuning/prefix_tuning/factscore/train.py
+python src/llm_finetuning/supervised_finetuning/prefix_tuning/popqa/train.py
+python src/llm_finetuning/supervised_finetuning/prefix_tuning/earnings_call/train.py
+```
+
+</CodeGroup>
+
+Each script reads its co-located `config.yaml`, downloads the dataset, wraps the base model with the adapter, trains, and saves the adapter weights plus tokenizer to `output_dir`.
+
+## LoRA configuration
+
+The following parameters from `lora/arc/config.yaml` control the adapter size and which layers are targeted. The same defaults apply to QLoRA and DoRA.
+
+```yaml
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+```
+
+<Tip>
+Use QLoRA to cut VRAM requirements by approximately 50% compared to LoRA. The base model is quantized to 4-bit NF4 format via BitsAndBytes; the LoRA adapters themselves are still trained in bfloat16. This makes 3B-parameter models trainable on 6–8 GB of GPU memory.
+</Tip>
+
+## Training script pattern
+
+All five techniques share the same high-level structure. Here is the LoRA variant from `lora/arc/train.py`:
+
+```python
+from peft import LoraConfig, TaskType, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTConfig, SFTTrainer
+
+# Adapter configuration
+peft_config = LoraConfig(
+    task_type=TaskType.CAUSAL_LM,
+    r=config["lora_r"],
+    lora_alpha=config["lora_alpha"],
+    lora_dropout=config["lora_dropout"],
+    bias="none",
+    target_modules=config["target_modules"],
+)
+model = get_peft_model(model, peft_config)
+
+# Training
+training_args = SFTConfig(
+    output_dir=config["output_dir"],
+    num_train_epochs=config["num_train_epochs"],
+    per_device_train_batch_size=config["per_device_train_batch_size"],
+    gradient_accumulation_steps=config["gradient_accumulation_steps"],
+    learning_rate=config["learning_rate"],
+    bf16=True,
+    dataset_text_field="text",
+    packing=False,
+)
+
+trainer = SFTTrainer(
+    model=model,
+    train_dataset=dataset,
+    processing_class=tokenizer,
+    args=training_args,
+)
+
+trainer.train()
+model.save_pretrained(config["output_dir"])
+tokenizer.save_pretrained(config["output_dir"])
+```
+
+For QLoRA, `BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4")` is passed to `AutoModelForCausalLM.from_pretrained`, and `peft_config` is passed directly to `SFTTrainer` rather than calling `get_peft_model` manually.
+
+## GPU memory guidance
+
+| Technique | Typical VRAM |
+|-----------|-------------|
+| LoRA (3B model) | 8–12 GB |
+| QLoRA (3B model) | 6–8 GB |
+
+Reduce `per_device_train_batch_size` to `1` and increase `gradient_accumulation_steps` if you run out of memory.
+
+## Overriding the dataset
+
+To use a different dataset split or HuggingFace ID, edit `config.yaml` in the pipeline directory:
+
+```yaml
+dataset_id: "allenai/ai2_arc"
+dataset_subset: "ARC-Challenge"
+split: "train"
+```
+
+All three keys are optional. Omitting them falls back to the loader's class-level defaults.

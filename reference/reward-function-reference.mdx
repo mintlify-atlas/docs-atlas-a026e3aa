@@ -1,0 +1,326 @@
+---
+title: "Reward function API reference"
+description: "Complete reference for all GRPO reward functions: score ranges, scoring logic, and the BaseReward callable interface across math, multi-hop QA, and medical QA."
+---
+
+Reward functions are the primary training signal in GRPO pipelines. This repo defines reward functions across three modules — `math_reasoning`, `multi_hop_question_answering`, and `medical_question_answering` — each composed of correctness and format functions. All reward functions are `BaseReward` subclasses: callable instances that return one scalar score per generated completion. They are passed directly to `GRPOTrainer(reward_funcs=[...])` and called once per batch during training.
+
+---
+
+## `BaseReward` interface
+
+`BaseReward` is the abstract base class for all reward functions, defined in `src/llm_finetuning/core/reward.py`.
+
+```python
+class BaseReward(ABC):
+    def __init__(self, config: RewardConfig | None = None) -> None: ...
+
+    @abstractmethod
+    def __call__(
+        self,
+        prompts: list,
+        completions: list,
+        **kwargs: Any,
+    ) -> list[float]: ...
+```
+
+<ParamField path="prompts" type="list" required>
+  Batch of prompt histories. Each item is a list of chat message dicts leading up to the assistant turn.
+</ParamField>
+
+<ParamField path="completions" type="list" required>
+  Batch of generated assistant message lists aligned with `prompts`. Each item is a list containing one dict: `{"role": "assistant", "content": "..."}`. Access the response text via `completion[0]["content"]`.
+</ParamField>
+
+<ParamField path="**kwargs" type="Any">
+  Extra per-row dataset columns forwarded by `GRPOTrainer`. For example, if the dataset has an `answer` column, it is available as `kwargs["answer"]` — a list of ground-truth values, one per completion.
+</ParamField>
+
+**Return type**: `list[float]` — one reward score per completion, ordered to match `completions`. GRPO normalises scores within each generation group to compute relative advantages before updating the policy.
+
+<Tip>
+To use a reward function in contexts that require a picklable callable, call `.as_fn()` on the instance. This wraps `__call__` in a plain function with the same `__name__`.
+</Tip>
+
+---
+
+## Reward functions by module
+
+<Tabs>
+  <Tab title="Math Reasoning (5 functions)">
+    Five reward functions are composed for GSM8K training in `math_reasoning/grpo/gsm8k/`. The dominant signal is `AnswerCorrectnessReward`; the four format functions guide structure.
+
+    ### Correctness
+
+    #### `AnswerCorrectnessReward`
+
+    **File**: `math_reasoning/reward_functions/correctness/answer_correctness.py`  
+    **Score range**: −1.0 to 3.0
+
+    Extracts the predicted answer from `<answer>...</answer>` tags in the completion, falling back to a `#### {number}` pattern. Compares the extracted value against `kwargs["answer"]` (the ground-truth numeric string from GSM8K).
+
+    | Condition | Score |
+    |---|---|
+    | Exact string match | 3.0 |
+    | Numeric value within 10% of ground truth | 0.5 |
+    | Numeric value within 20% of ground truth | 0.25 |
+    | Wrong answer (parseable but out of range) | −1.0 |
+    | No parseable answer found | 0.0 |
+    | ValueError or ZeroDivisionError during numeric comparison | −0.5 |
+
+    ---
+
+    ### Format
+
+    #### `ReasoningTagsReward`
+
+    **File**: `math_reasoning/reward_functions/format/reasoning_tags.py`  
+    **Score range**: −2.0 to 2.0
+
+    Counts occurrences of each of the four required tags: `<reasoning>`, `</reasoning>`, `<answer>`, `</answer>`. Expects exactly one of each.
+
+    - +0.5 per tag whose count equals 1
+    - −0.5 per tag whose count does not equal 1
+
+    Maximum score (all four tags present exactly once): 2.0. Minimum (all four wrong): −2.0.
+
+    ---
+
+    #### `StepFormatReward`
+
+    **File**: `math_reasoning/reward_functions/format/step_format.py`  
+    **Score range**: 0.0 to 1.0
+
+    Counts lines matching any step pattern: `Step N`, `N.`, or bullet characters (`-`, `*`, `•`).
+
+    | Steps found | Score |
+    |---|---|
+    | ≥ 3 | 1.0 |
+    | < 3 | `count / 3` |
+
+    ---
+
+    #### `MultilineComplianceReward`
+
+    **File**: `math_reasoning/reward_functions/format/multiline_compliance.py`  
+    **Score range**: 0.0 to 1.0
+
+    Counts non-empty lines in the completion.
+
+    | Non-empty lines | Score |
+    |---|---|
+    | ≥ 5 | 1.0 |
+    | < 5 | `count / 5` |
+
+    ---
+
+    #### `ResponseStructureReward`
+
+    **File**: `math_reasoning/reward_functions/format/response_structure.py`  
+    **Score range**: 0.0 to 1.0
+
+    Regex-matches complete `<reasoning>...</reasoning>` and `<answer>...</answer>` blocks (content required between tags). Partial credit is awarded if only one block is present.
+
+    | Condition | Score |
+    |---|---|
+    | Both `<reasoning>` and `<answer>` blocks present | 1.0 |
+    | Only `<reasoning>` block | 0.5 |
+    | Only `<answer>` block | 0.5 |
+    | Neither block present | 0.0 |
+  </Tab>
+
+  <Tab title="Multi-Hop QA (8 functions)">
+    Eight reward functions are composed for HotpotQA, FreshQA, and MuSiQue training in `multi_hop_question_answering/grpo/`.
+
+    <Warning>
+    All four correctness reward functions make LLM API calls via DeepEval or Evidently. You must set `OPENAI_API_KEY` before running any pipeline in this module.
+    </Warning>
+
+    ### Correctness
+
+    #### `DeepEvalGEvalRAGReward`
+
+    **File**: `reward_functions/correctness/deepeval_gevalrag.py`  
+    **Score range**: 0.0 to 1.0  
+    **Dependencies**: `deepeval`, OpenAI API
+
+    LLM-as-judge using DeepEval's `GEval` metric. Evaluates each completion against three RAG criteria:
+
+    - **Factual accuracy**: does the answer correctly address the multi-hop question?
+    - **Supporting evidence**: does the reasoning cite relevant evidence?
+    - **Completeness**: does the answer fully address all parts of the question?
+
+    Uses `kwargs["answer"]` as `expected_output`. Returns the normalised GEval score.
+
+    ---
+
+    #### `DeepEvalAnswerRelevancyReward`
+
+    **File**: `reward_functions/correctness/deepeval_answer_relevancy.py`  
+    **Score range**: 0.0 to 1.0  
+    **Dependencies**: `deepeval`, OpenAI API
+
+    Uses DeepEval's `AnswerRelevancyMetric`. Measures how relevant the completion is to the original question. Does not require a ground-truth answer. Returns the metric score directly.
+
+    ---
+
+    #### `DeepEvalSummarizationReward`
+
+    **File**: `reward_functions/correctness/deepeval_summarization.py`  
+    **Score range**: 0.0 to 1.0  
+    **Dependencies**: `deepeval`, OpenAI API
+
+    Uses DeepEval's `SummarizationMetric`. Measures faithfulness and coverage of the response as a summary of the reasoning chain. Returns the metric score directly.
+
+    ---
+
+    #### `EvidentlyCorrectnessLLMReward`
+
+    **File**: `reward_functions/correctness/evidently_correctness_llm.py`  
+    **Score range**: 0.0 or 1.0 (binary)  
+    **Dependencies**: `evidently`, OpenAI API
+
+    Binary LLM judge using Evidently's `BinaryClassificationPromptTemplate`. Asks the judge whether the response is correct and complete given the expected answer (`kwargs["answer"]`). Returns 1.0 for correct, 0.0 for incorrect.
+
+    ---
+
+    ### Format
+
+    #### `ReasoningTagsReward`
+
+    **File**: `reward_functions/format/reasoning_tags.py`  
+    **Score range**: 0.0 or 1.0 (binary)
+
+    <Note>
+    This is a different implementation from the `math_reasoning` version. It is binary, not a per-tag count.
+    </Note>
+
+    Returns 1.0 if the completion contains a complete `<reasoning>...</reasoning>` block (matched via regex, content required). Returns 0.0 otherwise.
+
+    ---
+
+    #### `MultilineComplianceReward`
+
+    **File**: `reward_functions/format/multiline_compliance.py`  
+    **Score range**: 0.0 to 1.0
+
+    <Note>
+    Threshold here is 3 lines, versus 5 lines in the `math_reasoning` version.
+    </Note>
+
+    | Non-empty lines | Score |
+    |---|---|
+    | ≥ 3 | 1.0 |
+    | < 3 | `count / 3` |
+
+    ---
+
+    #### `StructureValidationReward`
+
+    **File**: `reward_functions/format/structure_validation.py`  
+    **Score range**: 0.0 to 1.0
+
+    Regex-matches complete `<reasoning>...</reasoning>` and `<answer>...</answer>` blocks.
+
+    | Condition | Score |
+    |---|---|
+    | Both blocks present | 1.0 |
+    | Only one block present | 0.5 |
+    | Neither block present | 0.0 |
+
+    ---
+
+    #### `ResponseFormatReward`
+
+    **File**: `reward_functions/format/response_format.py`  
+    **Score range**: 0.0 to 1.0
+
+    Scores based on response character length. Target range: 50–2000 characters.
+
+    | Length | Score |
+    |---|---|
+    | 50–2000 chars | 1.0 |
+    | < 50 chars | `length / 50 × 0.5` (max 0.5) |
+    | > 2000 chars | `2000 / length × 0.5` (max 0.5) |
+  </Tab>
+
+  <Tab title="Medical QA (8 functions)">
+    The `medical_question_answering` module uses eight reward functions with implementations identical to `multi_hop_question_answering`. The functions are **copied, not imported** — changes to one module's reward functions do not affect the other.
+
+    <Warning>
+    You must set `OPENAI_API_KEY` before running any pipeline in this module. All four correctness reward functions make LLM API calls.
+    </Warning>
+
+    The single functional difference is in `DeepEvalGEvalRAGReward`: the GEval criteria string reads "correctly addresses the **medical** question" instead of "multi-hop question".
+
+    ### Correctness
+
+    | Class | File | Score range | What it measures |
+    |---|---|---|---|
+    | `DeepEvalGEvalRAGReward` | `correctness/deepeval_gevalrag.py` | 0.0–1.0 | GEval RAG criteria with medical question framing |
+    | `DeepEvalAnswerRelevancyReward` | `correctness/deepeval_answer_relevancy.py` | 0.0–1.0 | `AnswerRelevancyMetric` — no ground truth needed |
+    | `DeepEvalSummarizationReward` | `correctness/deepeval_summarization.py` | 0.0–1.0 | `SummarizationMetric` — faithfulness and coverage |
+    | `EvidentlyCorrectnessLLMReward` | `correctness/evidently_correctness_llm.py` | 0.0 or 1.0 | Binary correct/incorrect via `BinaryClassificationPromptTemplate` |
+
+    ### Format
+
+    | Class | File | Score range | What it measures |
+    |---|---|---|---|
+    | `ReasoningTagsReward` | `format/reasoning_tags.py` | 0.0 or 1.0 | Presence of complete `<reasoning>...</reasoning>` block |
+    | `MultilineComplianceReward` | `format/multiline_compliance.py` | 0.0–1.0 | ≥ 3 non-empty lines |
+    | `StructureValidationReward` | `format/structure_validation.py` | 0.0–1.0 | Both `<reasoning>` and `<answer>` blocks |
+    | `ResponseFormatReward` | `format/response_format.py` | 0.0–1.0 | Response length in 50–2000 character range |
+
+    See the **Multi-Hop QA** tab for full scoring tables — the logic is identical for all eight functions.
+  </Tab>
+</Tabs>
+
+---
+
+## Composing reward functions in GRPOTrainer
+
+Pass a list of instantiated reward functions to `GRPOTrainer`. GRPO calls each function once per batch and sums the resulting scores per completion before normalising within each generation group.
+
+```python
+from llm_finetuning.math_reasoning.reward_functions.correctness.answer_correctness import (
+    AnswerCorrectnessReward,
+)
+from llm_finetuning.math_reasoning.reward_functions.format.reasoning_tags import (
+    ReasoningTagsReward,
+)
+from llm_finetuning.math_reasoning.reward_functions.format.step_format import (
+    StepFormatReward,
+)
+from llm_finetuning.math_reasoning.reward_functions.format.multiline_compliance import (
+    MultilineComplianceReward,
+)
+from llm_finetuning.math_reasoning.reward_functions.format.response_structure import (
+    ResponseStructureReward,
+)
+
+trainer = GRPOTrainer(
+    reward_funcs=[
+        AnswerCorrectnessReward(),
+        ReasoningTagsReward(),
+        StepFormatReward(),
+        MultilineComplianceReward(),
+        ResponseStructureReward(),
+    ],
+    ...
+)
+```
+
+---
+
+## Unit testing guidance
+
+- Create small `prompts`/`completions` fixtures that mirror the TRL structure:
+
+  ```python
+  completions = [[{"role": "assistant", "content": "<reasoning>Step 1...</reasoning><answer>42</answer>"}]]
+  prompts = [[{"role": "user", "content": "What is 6 × 7?"}]]
+  ```
+
+- Assert the returned list has length equal to `len(completions)`.
+- Test edge cases: empty content, missing tags, boundary values for numeric scores.
+- For LLM-judge rewards (`DeepEval`, `Evidently`), mock the external API call in unit tests to avoid requiring `OPENAI_API_KEY` in CI.

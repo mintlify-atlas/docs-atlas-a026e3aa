@@ -1,0 +1,197 @@
+---
+title: "Preference Alignment: DPO, ORPO, KTO, and PPO"
+description: "Align language models with human preferences using four algorithms — DPO, ORPO, KTO, and PPO — all using QLoRA quantization via Unsloth and TRL."
+---
+
+Preference alignment teaches a model to prefer human-approved responses over rejected ones. Unlike standard SFT, these methods encode a preference signal directly into the loss: paired comparisons (DPO, ORPO), binary desirability labels (KTO), or live reward model scoring (PPO). This module provides six pipelines across four algorithms. DPO, ORPO, and KTO use QLoRA via Unsloth's `FastLanguageModel`; PPO uses `AutoModelForCausalLMWithValueHead` with a 4-bit base and a manual rollout loop scored by the OpenAssistant DeBERTa-v3 reward model.
+
+## All six pipelines
+
+| Algorithm | Dataset | Model | Command |
+|-----------|---------|-------|---------|
+| DPO | UltraFeedback (~60k) | `unsloth/zephyr-sft-bnb-4bit` | `python src/llm_finetuning/preference_alignment/dpo/ultrafeedback/train.py` |
+| DPO | WebGPT Comparisons (~19k) | `unsloth/zephyr-sft-bnb-4bit` | `python src/llm_finetuning/preference_alignment/dpo/webgpt/train.py` |
+| ORPO | UltraFeedback (~60k) | `unsloth/llama-3-8b-bnb-4bit` | `python src/llm_finetuning/preference_alignment/orpo/ultrafeedback/train.py` |
+| KTO | KTO-Mix-14k (14k) | `unsloth/Qwen2.5-1.5B-Instruct` | `python src/llm_finetuning/preference_alignment/kto/kto_mix/train.py` |
+| PPO | UltraFeedback (~60k) | `unsloth/llama-3-8b-bnb-4bit` | `python src/llm_finetuning/preference_alignment/ppo/ultrafeedback/train.py` |
+| PPO | WebGPT Comparisons (~19k) | `unsloth/llama-3-8b-bnb-4bit` | `python src/llm_finetuning/preference_alignment/ppo/webgpt/train.py` |
+
+## Algorithms
+
+<Tabs>
+  <Tab title="DPO">
+    Direct Preference Optimization (DPO) reparameterizes the RLHF objective to optimize directly on `{prompt, chosen, rejected}` triplets using a contrastive cross-entropy loss — no separate reward model or value network required.
+
+    **Data format:** `prompt`, `chosen`, `rejected` — all serialized with `apply_chat_template`.
+
+    The `beta` parameter controls the KL penalty strength between the trained policy and the reference model. Higher values constrain the policy more tightly to the original model's behavior.
+
+    **Datasets:**
+
+    | Dataset | HuggingFace ID | Split |
+    |---------|---------------|-------|
+    | UltraFeedback Binarized | `HuggingFaceH4/ultrafeedback_binarized` | `train_prefs` |
+    | WebGPT Comparisons | `openai/webgpt_comparisons` | `train` |
+
+    ```bash
+    python src/llm_finetuning/preference_alignment/dpo/ultrafeedback/train.py
+    python src/llm_finetuning/preference_alignment/dpo/webgpt/train.py
+    ```
+
+    Key config parameters (`dpo/ultrafeedback/config.yaml`):
+
+    ```yaml
+    model_id: "unsloth/zephyr-sft-bnb-4bit"
+    max_seq_length: 4096
+    dpo_beta: 0.1
+    lora_r: 64
+    lora_alpha: 64
+    ```
+
+    <Note>
+    `PatchDPOTrainer()` from Unsloth must be called at module level before importing `DPOTrainer`. This is already present in all DPO train scripts — do not remove it.
+    </Note>
+  </Tab>
+  <Tab title="ORPO">
+    Odds Ratio Preference Optimization (ORPO) combines supervised fine-tuning and preference alignment into a single training step. It adds an odds-ratio penalty to the standard SFT loss, eliminating the need for a reference model entirely.
+
+    **Data format:** `prompt`, `chosen`, `rejected` — same as DPO.
+
+    **Dataset:**
+
+    | Dataset | HuggingFace ID | Split |
+    |---------|---------------|-------|
+    | UltraFeedback Binarized | `HuggingFaceH4/ultrafeedback_binarized` | `train_prefs` |
+
+    ```bash
+    python src/llm_finetuning/preference_alignment/orpo/ultrafeedback/train.py
+    ```
+
+    Key config parameters (`orpo/ultrafeedback/config.yaml`):
+
+    ```yaml
+    model_id: "unsloth/llama-3-8b-bnb-4bit"
+    max_seq_length: 4096
+    orpo_beta: 0.1
+    lora_r: 64
+    lora_alpha: 64
+    ```
+
+    <Note>
+    ORPO also requires `PatchDPOTrainer()` at module level before importing `ORPOTrainer`. The copied train script already includes this — do not remove it.
+    </Note>
+  </Tab>
+  <Tab title="KTO">
+    Kahneman-Tversky Optimization (KTO) trains on binary desirability labels rather than paired comparisons. Each example is labeled as desirable (`True`) or undesirable (`False`), drawing on prospect theory to model human preference asymmetries.
+
+    **Data format:** `prompt`, `completion`, `label` (bool). No paired data is required; the KTO-Mix-14k dataset is already in this format with no preprocessing needed.
+
+    **Dataset:**
+
+    | Dataset | HuggingFace ID | Split |
+    |---------|---------------|-------|
+    | KTO-Mix-14k | `trl-lib/kto-mix-14k` | `train` |
+
+    ```bash
+    python src/llm_finetuning/preference_alignment/kto/kto_mix/train.py
+    ```
+
+    Key config parameters (`kto/kto_mix/config.yaml`):
+
+    ```yaml
+    model_id: "unsloth/Qwen2.5-1.5B-Instruct"
+    max_seq_length: 2048
+    lora_r: 16
+    lora_alpha: 16
+    ```
+  </Tab>
+  <Tab title="PPO">
+    Proximal Policy Optimization (PPO) uses a pointwise reward model to score generated rollouts during training, then applies policy gradient updates with a KL penalty to prevent excessive drift from the reference model.
+
+    **Key difference from other methods:** PPO requires `AutoModelForCausalLMWithValueHead` (a value head is needed for the critic) and a manual rollout loop — there is no `trainer.train()` call.
+
+    **Reward model:** `OpenAssistant/reward-model-deberta-v3-large-v2`, a DeBERTa-v3 model that produces a scalar quality score for a `(prompt, response)` pair. Downloaded automatically on first run via `PointwiseRewardModel`.
+
+    **Datasets:**
+
+    | Dataset | HuggingFace ID | Split |
+    |---------|---------------|-------|
+    | UltraFeedback Binarized | `HuggingFaceH4/ultrafeedback_binarized` | `train_prefs` |
+    | WebGPT Comparisons | `openai/webgpt_comparisons` | `train` |
+
+    ```bash
+    python src/llm_finetuning/preference_alignment/ppo/ultrafeedback/train.py
+    python src/llm_finetuning/preference_alignment/ppo/webgpt/train.py
+    ```
+
+    Key config parameters (`ppo/ultrafeedback/config.yaml`):
+
+    ```yaml
+    model_id: "unsloth/llama-3-8b-bnb-4bit"
+    learning_rate: 1.41e-5
+    batch_size: 64
+    mini_batch_size: 1
+    gradient_accumulation_steps: 1
+    ppo_epochs: 4
+    max_new_tokens: 128
+    ```
+
+    <Warning>
+    PPO requires 40+ GB of VRAM due to the value head and reward model running simultaneously with the policy model. It does not use LoRA adapter compression; the full model weights are updated via the value head.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## PPO rollout loop
+
+Unlike DPO, ORPO, and KTO — which call `trainer.train()` — PPO drives training through a manual loop. The script generates completions, scores them with the reward model, and calls `trainer.step()`:
+
+```python
+from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+
+# PPO requires a value head — not FastLanguageModel
+model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    config["model_id"],
+    load_in_4bit=True,
+    device_map="auto",
+)
+
+reward_model = PointwiseRewardModel()  # OpenAssistant DeBERTa-v3
+
+generation_kwargs = {
+    "max_new_tokens": config.get("max_new_tokens", 128),
+    "do_sample": True,
+    "temperature": 0.7,
+    "pad_token_id": tokenizer.eos_token_id,
+}
+
+for batch in trainer.dataloader:
+    query_tensors = batch["input_ids"]
+
+    # Generate completions
+    response_tensors = trainer.generate(query_tensors, **generation_kwargs)
+    batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
+
+    # Score with the pointwise reward model
+    prompts = tokenizer.batch_decode(query_tensors, skip_special_tokens=True)
+    rewards = [
+        torch.tensor(reward_model.score(p, r))
+        for p, r in zip(prompts, batch["response"])
+    ]
+
+    # PPO policy gradient update
+    trainer.step(list(query_tensors), list(response_tensors), rewards)
+```
+
+## GPU memory guidance
+
+| Algorithm | Model size | Typical VRAM |
+|-----------|------------|-------------|
+| DPO QLoRA | 7B | 16–24 GB |
+| ORPO QLoRA | 7B | 16–24 GB |
+| KTO QLoRA | 1.5B | 8–12 GB |
+| PPO | 8B | 40+ GB |
+
+## Output
+
+All pipelines save trained weights and the tokenizer to `./outputs/preference_alignment/<algorithm>/<dataset>/` by default. Change `output_dir` in `config.yaml` to save elsewhere.

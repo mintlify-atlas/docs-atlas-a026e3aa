@@ -1,0 +1,79 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "LLM Fine-tuning",
+  "projectDescription": "A collection of 39 training pipelines for fine-tuning large language models using Supervised Fine-Tuning (SFT), GRPO, and Preference Alignment across math reasoning, multi-hop QA, medical QA, and general QA domains.",
+  "theme": "palm",
+  "primaryColor": "#4595db",
+  "lightColor": "#5ebf9e",
+  "darkColor": "#7c7c7c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Training Paradigms",
+            "pages": [
+              "training/supervised-finetuning",
+              "training/grpo-math-reasoning",
+              "training/multi-hop-qa",
+              "training/medical-qa",
+              "training/preference-alignment"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/reward-functions",
+              "concepts/dataset-loaders",
+              "concepts/adapters"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/config",
+              "reference/datasets",
+              "reference/reward-function-reference"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "39 training pipelines across SFT, GRPO, and Preference Alignment",
+    "5 adapter methods: LoRA, QLoRA, DoRA, P-Tuning, Prefix-Tuning",
+    "GRPO with LLM-as-a-Judge reward functions via DeepEval and Evidently AI",
+    "Preference alignment with DPO, ORPO, KTO, and PPO",
+    "Two-stage SFT + GRPO math reasoning pipeline",
+    "16 datasets spanning math, multi-hop QA, medical QA, and general QA",
+    "Powered by HuggingFace TRL, PEFT, and Unsloth",
+    "Configurable hyperparameters via YAML config files"
+  ],
+  "publicApiSurface": [
+    "BaseReward.__call__(prompts, completions, **kwargs) -> list[float]",
+    "BaseReward.as_fn() -> Callable",
+    "BaseDatasetLoader.load(split: str) -> Dataset",
+    "BaseDatasetLoader.tokenize(ds, tokenizer, text_column) -> Dataset",
+    "BaseDatasetLoader.format_example(example) -> dict",
+    "DatasetConfig(dataset_id, subset, cache_dir, remove_source_columns, num_proc, extra_load_kwargs)",
+    "RewardConfig(name)",
+    "AnswerCorrectnessReward",
+    "ReasoningTagsReward",
+    "StepFormatReward",
+    "MultilineComplianceReward",
+    "ResponseStructureReward",
+    "DeepEvalGEvalRAGReward",
+    "DeepEvalAnswerRelevancyReward",
+    "DeepEvalSummarizationReward",
+    "EvidentlyCorrectnessLLMReward"
+  ]
+}

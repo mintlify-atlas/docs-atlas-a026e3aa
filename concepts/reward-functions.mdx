@@ -1,0 +1,359 @@
+---
+title: "How reward functions work in GRPO training"
+description: "Reward functions are Python callables injected into GRPOTrainer. Learn how BaseReward works, how to compose multiple rewards, and how to implement custom ones."
+---
+
+Reward functions are the core signal that drives Group Relative Policy Optimization (GRPO). During each training step, `GRPOTrainer` generates `num_generations` completions per prompt, calls every registered reward function with the full batch, and normalises the scores within each group to compute relative advantages before updating the policy. This project implements reward functions as subclasses of `BaseReward` — a thin abstract class that satisfies TRL's callable interface while giving every reward a stable name for logging.
+
+## The `BaseReward` abstract class
+
+`BaseReward` lives in `src/llm_finetuning/core/reward.py` and is the only class you need to subclass to add a new reward.
+
+```python
+@dataclass(frozen=True, slots=True)
+class RewardConfig:
+    """Configuration for naming a reward function in TRL logs."""
+
+    name: str = "reward"
+
+
+class BaseReward(ABC):
+    """Synchronous reward callable for TRL's GRPOTrainer.
+
+    Subclasses implement __call__ to return one scalar reward per generated
+    completion. Instances can be passed directly to reward_funcs=[...].
+
+    TRL logs rewards by callable name, so this class mirrors the configured
+    name onto self.__name__ and exposes the class docstring via self.__doc__.
+    """
+
+    def __init__(self, config: RewardConfig | None = None) -> None:
+        """Initialize the reward and expose a stable __name__ for logging."""
+        self.config = config or RewardConfig()
+        self.__name__ = self.config.name
+        self.__doc__ = self.__class__.__doc__
+
+    @abstractmethod
+    def __call__(self, prompts: list, completions: list, **kwargs: Any) -> list[float]:
+        ...
+
+    def as_fn(self) -> Callable[..., list[float]]:
+        ...
+```
+
+### `RewardConfig`
+
+`RewardConfig` is a frozen dataclass with a single field: `name`. TRL uses `reward.__name__` when logging reward scalars to Weights & Biases or TensorBoard. Setting a meaningful name (e.g. `"answer_correctness"`) keeps training runs readable.
+
+```python
+from llm_finetuning.core import RewardConfig
+
+config = RewardConfig(name="answer_correctness")
+```
+
+## Passing rewards to `GRPOTrainer`
+
+Pass a list of `BaseReward` instances directly to the `reward_funcs` argument. TRL accepts any callable, and `BaseReward` instances satisfy that contract.
+
+```python
+from trl import GRPOTrainer
+
+from llm_finetuning.math_reasoning.reward_functions.correctness.answer_correctness import (
+    AnswerCorrectnessReward,
+)
+from llm_finetuning.math_reasoning.reward_functions.format.reasoning_tags import (
+    ReasoningTagsReward,
+)
+
+trainer = GRPOTrainer(
+    reward_funcs=[
+        AnswerCorrectnessReward(),
+        ReasoningTagsReward(),
+    ],
+    ...
+)
+```
+
+When more than one reward is registered, GRPO sums the scores element-wise before computing advantages. This lets you combine a strong correctness signal with lighter-weight format signals.
+
+## How GRPO uses reward scores
+
+For each prompt in the batch, `GRPOTrainer` generates `num_generations` completions (controlled by the `num_generations` hyperparameter in `config.yaml`). All rewards are called once with the full batch:
+
+```python
+scores = reward_fn(prompts, completions, **kwargs)
+```
+
+GRPO then normalises the scores **within each generation group** (the `num_generations` completions that share a prompt) to produce relative advantages. A completion that scores above the group mean receives a positive advantage; one that scores below the mean receives a negative advantage. The policy is updated to increase the probability of high-advantage completions.
+
+## The `__call__` signature
+
+Every reward must implement this exact signature:
+
+```python
+def __call__(self, prompts: list, completions: list, **kwargs: Any) -> list[float]:
+```
+
+<ParamField path="prompts" type="list">
+  Batch of prompt histories. Each element is a list of chat message dicts
+  (`[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]`)
+  representing the full conversation leading up to the assistant turn.
+</ParamField>
+
+<ParamField path="completions" type="list">
+  Batch of generated assistant message lists, aligned one-to-one with `prompts`.
+  Each element is a **list containing a single dict**: `[{"role": "assistant", "content": "..."}]`.
+  Access the response text with `completion[0]["content"]`.
+</ParamField>
+
+<ParamField path="**kwargs" type="Any">
+  Extra per-row dataset columns forwarded by `GRPOTrainer`. For example, if the
+  dataset has an `answer` column, it is available as `kwargs["answer"]` — a list
+  of ground-truth values, one per completion in the batch.
+</ParamField>
+
+**Return value:** `list[float]` — one score per completion, in the same order as `completions`.
+
+### `completions` structure
+
+Each inner list always contains exactly one assistant message dict:
+
+```python
+# completions shape
+completions = [
+    [{"role": "assistant", "content": "The answer is 42."}],
+    [{"role": "assistant", "content": "I think it's 41."}],
+    # one entry per completion in the batch
+]
+
+# Access the response text:
+response = completion[0]["content"]
+```
+
+<Warning>
+Do not index `completion[1]` or higher. TRL always passes exactly one assistant
+message per completion. Indexing beyond `[0]` will raise `IndexError`.
+</Warning>
+
+## The `as_fn()` method
+
+`as_fn()` wraps the reward instance in a plain function with the same signature and `__name__`:
+
+```python
+reward = AnswerCorrectnessReward()
+reward_fn = reward.as_fn()   # plain callable, same behavior
+```
+
+Use `as_fn()` when:
+
+- A framework requires a **picklable** callable (e.g. multiprocessing-based evaluation harnesses that pickle reward functions before dispatching to worker processes).
+- A framework performs a **strict type check** for `callable` or `FunctionType` and rejects class instances.
+
+In normal `GRPOTrainer` usage, passing the instance directly (`AnswerCorrectnessReward()`) is preferred.
+
+## Implementing a custom format reward
+
+The following example adds a format reward that checks for the presence and correct nesting of `<reasoning>` and `<answer>` XML tags. It is adapted from the production implementation in `math_reasoning/reward_functions/format/reasoning_tags.py`.
+
+<Steps>
+  <Step title="Create the reward file">
+
+```python
+# src/llm_finetuning/math_reasoning/reward_functions/format/my_format_reward.py
+
+from typing import Any
+
+from llm_finetuning.core import BaseReward, RewardConfig
+
+
+class MyFormatReward(BaseReward):
+    """Reward presence of <reasoning> and <answer> tags."""
+
+    def __init__(self) -> None:
+        super().__init__(RewardConfig(name="my_format_reward"))
+
+    def __call__(self, prompts: list, completions: list, **kwargs: Any) -> list[float]:
+        scores = []
+        for completion in completions:
+            response = completion[0]["content"]
+            score = 0.0
+            score += 0.5 if response.count("<reasoning>") == 1 else -0.5
+            score += 0.5 if response.count("</reasoning>") == 1 else -0.5
+            score += 0.5 if response.count("<answer>") == 1 else -0.5
+            score += 0.5 if response.count("</answer>") == 1 else -0.5
+            scores.append(score)
+        return scores
+```
+
+  </Step>
+  <Step title="Register in __init__.py">
+
+```python
+# math_reasoning/reward_functions/format/__init__.py
+from llm_finetuning.math_reasoning.reward_functions.format.my_format_reward import (
+    MyFormatReward,
+)
+```
+
+  </Step>
+  <Step title="Add to reward_funcs in train.py">
+
+```python
+from llm_finetuning.math_reasoning.reward_functions.format.my_format_reward import (
+    MyFormatReward,
+)
+
+trainer = GRPOTrainer(
+    reward_funcs=[
+        AnswerCorrectnessReward(),
+        ReasoningTagsReward(),
+        MyFormatReward(),  # add here
+    ],
+    ...
+)
+```
+
+  </Step>
+</Steps>
+
+## Implementing a DeepEval correctness reward
+
+Use this pattern when you want an LLM judge to score completions. Requires `deepeval` and `OPENAI_API_KEY`.
+
+<Steps>
+  <Step title="Create the reward file">
+
+```python
+# src/llm_finetuning/multi_hop_question_answering/reward_functions/correctness/my_deepeval_reward.py
+
+from deepeval.metrics import GEval
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+
+from llm_finetuning.core import BaseReward, RewardConfig
+
+
+MY_CRITERIA = (
+    "The response correctly addresses the question with accurate, complete information."
+)
+
+
+class MyDeepEvalReward(BaseReward):
+    """Score completions using a custom GEval criterion."""
+
+    def __init__(self) -> None:
+        super().__init__(RewardConfig(name="my_deepeval_reward"))
+
+    def __call__(self, prompts: list, completions: list, **kwargs) -> list[float]:
+        scores = []
+        metric = GEval(
+            name="MyReward",
+            criteria=MY_CRITERIA,
+            evaluation_params=[
+                LLMTestCaseParams.INPUT,
+                LLMTestCaseParams.ACTUAL_OUTPUT,
+                LLMTestCaseParams.EXPECTED_OUTPUT,
+            ],
+        )
+        for i, completion in enumerate(completions):
+            response = completion[0]["content"]
+            question = prompts[i][-1]["content"]
+            answer = kwargs["answer"][i]
+
+            test_case = LLMTestCase(
+                input=question,
+                actual_output=response,
+                expected_output=answer,
+            )
+            metric.measure(test_case)
+            scores.append(metric.score if metric.score is not None else 0.0)
+        return scores
+```
+
+  </Step>
+  <Step title="Register in __init__.py">
+
+```python
+# multi_hop_question_answering/reward_functions/correctness/__init__.py
+from llm_finetuning.multi_hop_question_answering.reward_functions.correctness.my_deepeval_reward import (
+    MyDeepEvalReward,
+)
+```
+
+  </Step>
+  <Step title="Add to reward_funcs in train.py">
+
+```python
+trainer = GRPOTrainer(
+    reward_funcs=[
+        DeepEvalGEvalRAGReward(),
+        MyDeepEvalReward(),  # add here
+    ],
+    ...
+)
+```
+
+  </Step>
+  <Step title="Set the API key before running">
+
+```bash
+export OPENAI_API_KEY="your-key"
+python src/llm_finetuning/multi_hop_question_answering/grpo/hotpotqa/train.py
+```
+
+  </Step>
+</Steps>
+
+<Note>
+The built-in `AbstractDeepEvalGEvalRAGReward` base class (in
+`llm_finetuning.core.llm_judges.deepeval`) provides automatic retry on
+rate-limit errors and bounded concurrency via `asyncio.Semaphore`. For
+production use, prefer subclassing it over the manual approach shown above.
+</Note>
+
+## Common pitfalls
+
+<AccordionGroup>
+  <Accordion title="Not returning list[float]">
+    `GRPOTrainer` expects exactly `list[float]` with one entry per completion.
+    Returning a generator, a NumPy array, or a list of wrong length will raise a
+    runtime error during training. Always construct a plain Python list and verify
+    its length equals `len(completions)` before returning.
+
+    ```python
+    # Wrong — returns a generator
+    return (score for score in scores)
+
+    # Wrong — returns numpy array
+    return np.array(scores)
+
+    # Correct
+    return scores  # list[float], len == len(completions)
+    ```
+  </Accordion>
+  <Accordion title="Wrong completions indexing">
+    Each element of `completions` is a list with one dict. A common mistake is
+    treating it as a flat dict or indexing into `prompts` instead.
+
+    ```python
+    # Wrong — completions[i] is a list, not a dict
+    response = completions[i]["content"]
+
+    # Wrong — this indexes into prompts, not completions
+    response = completion[-1]["content"]
+
+    # Correct
+    response = completion[0]["content"]
+    ```
+  </Accordion>
+  <Accordion title="Mutating kwargs in-place">
+    `**kwargs` values are shared across all reward functions in the same batch.
+    Modifying a list in `kwargs` (e.g. `kwargs["answer"].pop()`) will corrupt the
+    data seen by subsequent reward functions. Always read from `kwargs` without
+    mutating it.
+  </Accordion>
+  <Accordion title="Relying on completion order within a group">
+    GRPO normalises scores within each group of `num_generations` completions.
+    Your reward should score each completion independently — do not rank or sort
+    completions inside `__call__`, as GRPO handles the relative comparison itself.
+  </Accordion>
+</AccordionGroup>
